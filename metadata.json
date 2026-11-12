@@ -1,0 +1,6 @@
+{
+  "name": "مياهنا - إدارة مصنع المياه والتوزيع الذكي",
+  "description": "نظام متكامل لإدارة مصنع المياه وتوزيع الصهاريج في مأرب باليمن مع تتبع GPS وSMS وعمل دون إنترنت وحساب الربحية وتحسين المسارات.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
