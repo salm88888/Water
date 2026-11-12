@@ -35,6 +35,7 @@ interface LocationPickerMapModalProps {
   existingCustomers?: Customer[];
   settings: SystemSettings;
   customerName?: string;
+  mode?: 'customer' | 'plant';
 }
 
 // Known Marib Neighborhood Centroids for quick snapping & proximity detection
@@ -73,7 +74,9 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
   existingCustomers = [],
   settings,
   customerName = 'العميل الجديد',
+  mode = 'customer',
 }) => {
+  const isPlantMode = mode === 'plant';
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const pinMarkerRef = useRef<L.Marker | null>(null);
@@ -123,20 +126,22 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
           maxZoom: 19,
         }).addTo(map);
 
-        // Water Plant Marker for reference
-        const plantIcon = L.divIcon({
-          className: 'plant-reference-pin',
-          html: `
-            <div class="flex items-center justify-center w-8 h-8 bg-sky-800 text-white rounded-full shadow-md border-2 border-white text-xs font-bold" title="${settings.plantLocation.name}">
-              🏢
-            </div>
-          `,
-          iconSize: [32, 32],
-          iconAnchor: [16, 16],
-        });
-        L.marker([settings.plantLocation.lat, settings.plantLocation.lng], { icon: plantIcon })
-          .addTo(map)
-          .bindPopup(`<strong>${settings.plantLocation.name}</strong><br/>موقع المصنع المركزي`);
+        // Water Plant Marker for reference (hidden when dragging the plant pin itself)
+        if (!isPlantMode) {
+          const plantIcon = L.divIcon({
+            className: 'plant-reference-pin',
+            html: `
+              <div class="flex items-center justify-center w-8 h-8 bg-sky-800 text-white rounded-full shadow-md border-2 border-white text-xs font-bold" title="${settings.plantLocation.name}">
+                🏢
+              </div>
+            `,
+            iconSize: [32, 32],
+            iconAnchor: [16, 16],
+          });
+          L.marker([settings.plantLocation.lat, settings.plantLocation.lng], { icon: plantIcon })
+            .addTo(map)
+            .bindPopup(`<strong>${settings.plantLocation.name}</strong><br/>موقع المصنع المركزي`);
+        }
 
         // Neighboring Customers for reference
         existingCustomers.forEach((cust) => {
@@ -154,19 +159,23 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
             .bindPopup(`<strong>${cust.name}</strong><br/>${cust.district} - خزان ${cust.tankCapacityLiters}L`);
         });
 
-        // The Draggable Customer Pin
+        // The Draggable Pin (Customer or Plant)
+        const pinBg = isPlantMode ? 'bg-sky-700' : 'bg-rose-600';
+        const pinEmoji = isPlantMode ? '🏢' : '🚰';
+        const pinText = isPlantMode ? `📍 ${customerName || settings.plantLocation.name}` : `📍 خزان ${customerName}`;
+
         const customerPinIcon = L.divIcon({
           className: 'active-draggable-customer-pin',
           html: `
             <div class="relative flex items-center justify-center">
               <div class="absolute -top-10 flex flex-col items-center animate-bounce">
-                <div class="bg-rose-600 text-white text-[11px] font-bold px-2 py-0.5 rounded-full shadow-md whitespace-nowrap border border-white">
-                  📍 خزان ${customerName}
+                <div class="${pinBg} text-white text-[11px] font-bold px-2 py-0.5 rounded-full shadow-md whitespace-nowrap border border-white">
+                  ${pinText}
                 </div>
-                <div class="w-2 h-2 bg-rose-600 rotate-45 -mt-1 border-r border-b border-white"></div>
+                <div class="w-2 h-2 ${pinBg} rotate-45 -mt-1 border-r border-b border-white"></div>
               </div>
-              <div class="w-9 h-9 bg-rose-600 text-white rounded-full shadow-xl border-3 border-white flex items-center justify-center text-sm font-bold">
-                🚰
+              <div class="w-9 h-9 ${pinBg} text-white rounded-full shadow-xl border-3 border-white flex items-center justify-center text-sm font-bold">
+                ${pinEmoji}
               </div>
               <div class="absolute -bottom-1 w-4 h-1.5 bg-black/30 rounded-full blur-xs"></div>
             </div>
@@ -274,18 +283,20 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
         {/* Modal Header */}
         <div className="p-3.5 sm:p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+            <div className={`w-9 h-9 rounded-xl ${isPlantMode ? 'bg-sky-700' : 'bg-rose-600'} text-white flex items-center justify-center shrink-0 shadow-xs`}>
               <MapPin className="w-5 h-5" />
             </div>
             <div>
               <h3 className="font-bold text-sm sm:text-base text-slate-900 flex items-center gap-2">
-                <span>تحديد موقع خزان العميل على خريطة مأرب</span>
-                <span className="text-[10px] bg-rose-100 text-rose-800 font-bold px-2 py-0.5 rounded-full">
-                  وضع الدبوس المباشر
+                <span>{isPlantMode ? 'تحديد موقع مصنع المياه على خريطة مأرب' : 'تحديد موقع خزان العميل على خريطة مأرب'}</span>
+                <span className={`text-[10px] ${isPlantMode ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800'} font-bold px-2 py-0.5 rounded-full`}>
+                  {isPlantMode ? 'موقع المصنع القابل للتغيير' : 'وضع الدبوس المباشر'}
                 </span>
               </h3>
               <p className="text-[11px] text-slate-500">
-                انقر على الخريطة أو اسحب الدبوس الأحمر مباشرة إلى موقع منزل العميل
+                {isPlantMode
+                  ? 'انقر على الخريطة أو اسحب الدبوس الأزرق إلى الموقع الجديد للمصنع أو المحطة'
+                  : 'انقر على الخريطة أو اسحب الدبوس الأحمر مباشرة إلى موقع منزل العميل'}
               </p>
             </div>
           </div>
@@ -399,10 +410,10 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
             <button
               type="button"
               onClick={handleConfirm}
-              className="flex-1 sm:flex-none px-6 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs transition-colors flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+              className={`flex-1 sm:flex-none px-6 py-2.5 ${isPlantMode ? 'bg-sky-700 hover:bg-sky-800' : 'bg-rose-600 hover:bg-rose-700'} text-white font-bold rounded-xl text-xs transition-colors flex items-center justify-center gap-2 shadow-sm cursor-pointer`}
             >
               <Check className="w-4 h-4" />
-              <span>اعتماد وتثبيت الموقع</span>
+              <span>{isPlantMode ? 'اعتماد وتثبيت موقع المصنع' : 'اعتماد وتثبيت الموقع'}</span>
             </button>
           </div>
         </div>

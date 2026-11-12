@@ -19,15 +19,19 @@ import {
   Signal,
   KeyRound,
   ShieldCheck,
+  Crosshair,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { LocationPickerMapModal } from '../common/LocationPickerMapModal';
 
 export const SystemSettingsView: React.FC = () => {
-  const { settings, updateSettings, resetDemoData, clearDemoData, setIsChangePinModalOpen, managerPin } = useApp();
+  const { settings, customers, updateSettings, resetDemoData, clearDemoData, setIsChangePinModalOpen } = useApp();
 
   const [form, setForm] = useState({ ...settings });
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [isPlantMapOpen, setIsPlantMapOpen] = useState(false);
+  const [gpsLoading, setGpsLoading] = useState(false);
 
   useEffect(() => {
     setForm({ ...settings });
@@ -51,6 +55,30 @@ export const SystemSettingsView: React.FC = () => {
     });
     setSaveSuccess(true);
     setTimeout(() => setSaveSuccess(false), 3000);
+  };
+
+  const handleCapturePlantGps = () => {
+    if (!navigator.geolocation) return;
+    setGpsLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const updatedPlant = {
+          ...form.plantLocation,
+          lat: Number(pos.coords.latitude.toFixed(6)),
+          lng: Number(pos.coords.longitude.toFixed(6)),
+        };
+        setForm((prev) => ({ ...prev, plantLocation: updatedPlant }));
+        await updateSettings({ plantLocation: updatedPlant });
+        setGpsLoading(false);
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 3000);
+      },
+      () => {
+        setGpsLoading(false);
+        setIsPlantMapOpen(true);
+      },
+      { enableHighAccuracy: true, timeout: 6000 }
+    );
   };
 
   return (
@@ -261,14 +289,41 @@ export const SystemSettingsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Section 3: Plant Location */}
+        {/* Section 3: Plant Location (Dynamic & Editable via Map or GPS) */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
-          <h3 className="font-bold text-slate-900 text-sm pb-2 border-b border-slate-100 flex items-center gap-2">
-            <MapPin className="w-4 h-4 text-sky-700" />
-            <span>موقع مصنع المياه المركزي بمأرب</span>
-          </h3>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-100">
+            <div>
+              <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                <MapPin className="w-4 h-4 text-sky-700" />
+                <span>موقع مصنع المياه المركزي (قابل للتعديل والتغيير)</span>
+              </h3>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                تُحسب مسافات الرحلات، استهلاك الديزل، ومسار الوايت انطلاقاً من هذا الموقع
+              </p>
+            </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleCapturePlantGps}
+                disabled={gpsLoading}
+                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-lg font-bold text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <Crosshair className={`w-3.5 h-3.5 text-sky-700 ${gpsLoading ? 'animate-spin' : ''}`} />
+                <span>{gpsLoading ? 'جاري الالتقاط...' : 'موقعي الحالي GPS'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsPlantMapOpen(true)}
+                className="px-3.5 py-1.5 bg-sky-700 hover:bg-sky-800 text-white rounded-lg font-bold text-xs flex items-center gap-1.5 shadow-xs cursor-pointer"
+              >
+                <MapPin className="w-3.5 h-3.5" />
+                <span>تحديد موقع المصنع على الخريطة</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
             <div>
               <label className="block text-slate-700 font-semibold mb-1">اسم المنشأة والمصنع</label>
               <input
@@ -282,14 +337,26 @@ export const SystemSettingsView: React.FC = () => {
               />
             </div>
             <div>
+              <label className="block text-slate-700 font-semibold mb-1">المنطقة / العنوان</label>
+              <input
+                type="text"
+                value={form.plantLocation.city}
+                onChange={(e) => setForm({
+                  ...form,
+                  plantLocation: { ...form.plantLocation, city: e.target.value },
+                })}
+                className="w-full p-2.5 border border-slate-200 rounded-lg"
+              />
+            </div>
+            <div>
               <label className="block text-slate-700 font-semibold mb-1">خط العرض (Latitude)</label>
               <input
                 type="number"
-                step="0.0001"
+                step="0.000001"
                 value={form.plantLocation.lat}
                 onChange={(e) => setForm({
                   ...form,
-                  plantLocation: { ...form.plantLocation, lat: parseFloat(e.target.value) },
+                  plantLocation: { ...form.plantLocation, lat: parseFloat(e.target.value) || 0 },
                 })}
                 className="w-full p-2.5 border border-slate-200 rounded-lg font-mono"
               />
@@ -298,11 +365,11 @@ export const SystemSettingsView: React.FC = () => {
               <label className="block text-slate-700 font-semibold mb-1">خط الطول (Longitude)</label>
               <input
                 type="number"
-                step="0.0001"
+                step="0.000001"
                 value={form.plantLocation.lng}
                 onChange={(e) => setForm({
                   ...form,
-                  plantLocation: { ...form.plantLocation, lng: parseFloat(e.target.value) },
+                  plantLocation: { ...form.plantLocation, lng: parseFloat(e.target.value) || 0 },
                 })}
                 className="w-full p-2.5 border border-slate-200 rounded-lg font-mono"
               />
@@ -385,6 +452,30 @@ export const SystemSettingsView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Interactive Plant Location Picker Modal */}
+      <LocationPickerMapModal
+        isOpen={isPlantMapOpen}
+        onClose={() => setIsPlantMapOpen(false)}
+        mode="plant"
+        customerName={form.plantLocation.name}
+        initialLat={form.plantLocation.lat}
+        initialLng={form.plantLocation.lng}
+        existingCustomers={customers}
+        settings={settings}
+        onSelectLocation={async ({ lat, lng, district }) => {
+          const updatedPlant = {
+            ...form.plantLocation,
+            lat,
+            lng,
+            city: district ? `مأرب - ${district}` : form.plantLocation.city,
+          };
+          setForm((prev) => ({ ...prev, plantLocation: updatedPlant }));
+          await updateSettings({ plantLocation: updatedPlant });
+          setSaveSuccess(true);
+          setTimeout(() => setSaveSuccess(false), 3000);
+        }}
+      />
     </div>
   );
 };

@@ -43,7 +43,7 @@ export const CustomerManagement: React.FC = () => {
     lat: 15.4712,
     lng: 45.3340,
     tankCapacityLiters: 2000,
-    tankRemainingLiters: 500,
+    tankRemainingLiters: 0,
     notes: '',
   });
 
@@ -70,7 +70,7 @@ export const CustomerManagement: React.FC = () => {
       lat: 15.4712,
       lng: 45.3340,
       tankCapacityLiters: 2000,
-      tankRemainingLiters: 500,
+      tankRemainingLiters: 0,
       notes: '',
     });
     setShowAddModal(true);
@@ -187,8 +187,9 @@ export const CustomerManagement: React.FC = () => {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredCustomers.map((cust) => {
-                const fillPercent = cust.tankCapacityLiters > 0 && cust.tankRemainingLiters !== undefined
-                  ? Math.round((cust.tankRemainingLiters / cust.tankCapacityLiters) * 100)
+                const remaining = cust.tankRemainingLiters ?? 0;
+                const fillPercent = cust.tankCapacityLiters > 0
+                  ? Math.round((remaining / cust.tankCapacityLiters) * 100)
                   : 0;
 
                 return (
@@ -221,7 +222,7 @@ export const CustomerManagement: React.FC = () => {
                           />
                         </div>
                         <span className="font-mono text-[11px] text-slate-600">
-                          {cust.tankRemainingLiters !== undefined ? `${cust.tankRemainingLiters}L` : 'غير محدد'}
+                          {remaining === 0 ? '0L (فارغ)' : `${remaining}L`}
                         </span>
                       </div>
                     </td>
@@ -360,13 +361,14 @@ export const CustomerManagement: React.FC = () => {
                 <label className="block text-slate-700 font-semibold mb-1">الكمية المتبقية حالياً بالخزان (لتر)</label>
                 <input
                   type="number"
+                  min={0}
                   value={formData.tankRemainingLiters}
-                  onChange={(e) => setFormData({ ...formData, tankRemainingLiters: Number(e.target.value) })}
+                  onChange={(e) => setFormData({ ...formData, tankRemainingLiters: Math.max(0, Number(e.target.value) || 0) })}
                   className="w-full p-2.5 border border-slate-200 rounded-lg font-mono"
-                  placeholder="إذا لم يكن فارغاً، أدخل الكمية الحالية"
+                  placeholder="الافتراضي 0 لتر (خزان فارغ)"
                 />
                 <span className="text-[11px] text-slate-500 mt-1 block">
-                  لا يفترض النظام أن الخزان فارغ؛ إذا السعة 2,000L والمتبقي 500L يقترح النظام تلقائياً تعبئة 1,500L.
+                  يفترض النظام دائماً أن خزان العميل فارغ (0 لتر)؛ إذا السعة 2,000L يقترح النظام تعبئة 2,000L بالكامل.
                 </span>
               </div>
 

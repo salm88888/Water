@@ -6,6 +6,7 @@
  */
 
 import React, { useState } from 'react';
+import { MapPin } from 'lucide-react';
 import { AppProvider, useApp } from './context/AppContext';
 import { RoleSelectionPortal } from './components/auth/RoleSelectionPortal';
 import { ManagerPinModal } from './components/auth/ManagerPinModal';
@@ -30,6 +31,7 @@ import { DriverApp } from './components/driver/DriverApp';
 import { DeviceSimulator } from './components/simulator/DeviceSimulator';
 import { NewOrderModal } from './components/modals/NewOrderModal';
 import { MaribMap } from './components/common/MaribMap';
+import { LocationPickerMapModal } from './components/common/LocationPickerMapModal';
 
 function MainAppContent() {
   const {
@@ -37,7 +39,9 @@ function MainAppContent() {
     selectRole,
     viewMode,
     managerTab,
+    setManagerTab,
     settings,
+    updateSettings,
     truck,
     trips,
     gpsEvents,
@@ -46,6 +50,7 @@ function MainAppContent() {
 
   const [isManagerPinModalOpen, setIsManagerPinModalOpen] = useState(false);
   const [isNewOrderModalOpen, setIsNewOrderModalOpen] = useState(false);
+  const [isPlantPickerOpen, setIsPlantPickerOpen] = useState(false);
 
   // 1. Initial Screen: Show the Two Big Buttons (Manager & Driver) if no role is selected
   if (!savedRole) {
@@ -101,17 +106,34 @@ function MainAppContent() {
           {managerTab === 'trips' && <TripsManagement />}
           {managerTab === 'map' && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <h2 className="text-base sm:text-lg font-bold text-slate-900">
                     خريطة التوزيع المباشر والتتبع في مأرب
                   </h2>
                   <p className="text-xs text-slate-500">
-                    مواقع العملاء، مصنع المياه المركزي، مسار الوايت الحالي وأثر نقاط GPS المرسلة عبر SMS
+                    مواقع العملاء ({customers.length})، مصنع المياه المركزي، مسار الوايت الحالي وأثر نقاط GPS المرسلة عبر SMS
                   </p>
                 </div>
+                <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => setIsPlantPickerOpen(true)}
+                    className="px-3.5 py-2 bg-sky-700 hover:bg-sky-800 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    <span>تغيير موقع المصنع</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setManagerTab('overview')}
+                    className="px-3.5 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-bold shadow-xs cursor-pointer"
+                  >
+                    العودة للوحة الرئيسية
+                  </button>
+                </div>
               </div>
-              <div className="h-[400px] sm:h-[520px] md:h-[620px]">
+              <div className="h-[460px] sm:h-[580px] md:h-[calc(100vh-190px)] min-h-[460px]">
                 <MaribMap
                   settings={settings}
                   truck={truck}
@@ -142,6 +164,27 @@ function MainAppContent() {
       />
 
       <ChangePinModal />
+
+      <LocationPickerMapModal
+        isOpen={isPlantPickerOpen}
+        onClose={() => setIsPlantPickerOpen(false)}
+        mode="plant"
+        customerName={settings.plantLocation.name}
+        initialLat={settings.plantLocation.lat}
+        initialLng={settings.plantLocation.lng}
+        existingCustomers={customers}
+        settings={settings}
+        onSelectLocation={async ({ lat, lng, district }) => {
+          await updateSettings({
+            plantLocation: {
+              ...settings.plantLocation,
+              lat,
+              lng,
+              city: district ? `مأرب - ${district}` : settings.plantLocation.city,
+            },
+          });
+        }}
+      />
     </div>
   );
 }

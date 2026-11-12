@@ -114,7 +114,23 @@ interface AppContextType {
 
   // SMS & GPS Gateway Simulation
   sendSabafonSMS: (rawText: string) => Promise<{ success: boolean; message: string }>;
-  triggerDriverGPSUpdate: (eventType: GPSEventType, lat: number, lng: number, speed?: number) => void;
+  importSabafonSMSBatch: (
+    rawBlob: string,
+    senderNumber?: string
+  ) => Promise<{
+    success: boolean;
+    message: string;
+    processedCount?: number;
+    duplicateCount?: number;
+    rejectedCount?: number;
+  }>;
+  triggerDriverGPSUpdate: (
+    eventType: GPSEventType,
+    lat: number,
+    lng: number,
+    speed?: number,
+    customerId?: string
+  ) => { rawSms: string; sentViaNativeBridge: boolean };
   syncOfflineData: () => Promise<number>;
   
   // Role & Authentication
@@ -307,7 +323,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       lat: cust.lat || settings.plantLocation.lat + 0.005,
       lng: cust.lng || settings.plantLocation.lng + 0.005,
       tankCapacityLiters: cust.tankCapacityLiters || 2000,
-      tankRemainingLiters: cust.tankRemainingLiters,
+      tankRemainingLiters: cust.tankRemainingLiters !== undefined ? cust.tankRemainingLiters : 0,
       notes: cust.notes || '',
       createdAt: new Date().toISOString(),
       isActive: true,
@@ -341,9 +357,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         district: orderPayload.district || 'حي الروضة',
         addressDetails: orderPayload.addressDetails || '',
         tankCapacity: orderPayload.tankCapacity || 2000,
-        requestedLiters: orderPayload.requestedLiters || 1000,
+        requestedLiters: orderPayload.requestedLiters || orderPayload.tankCapacity || 2000,
         pricePerLiter: orderPayload.pricePerLiter || settings.defaultSellingPricePerLiter,
-        totalAmount: (orderPayload.requestedLiters || 1000) * (orderPayload.pricePerLiter || settings.defaultSellingPricePerLiter),
+        totalAmount: (orderPayload.requestedLiters || orderPayload.tankCapacity || 2000) * (orderPayload.pricePerLiter || settings.defaultSellingPricePerLiter),
         source: 'driver_manual' as const,
         notes: orderPayload.notes,
         createdAt: new Date().toISOString(),
@@ -393,10 +409,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       lat: orderPayload.lat || settings.plantLocation.lat + 0.005,
       lng: orderPayload.lng || settings.plantLocation.lng + 0.005,
       tankCapacity: orderPayload.tankCapacity || 2000,
-      tankRemainingLiters: orderPayload.tankRemainingLiters,
-      requestedLiters: orderPayload.requestedLiters || 1500,
+      tankRemainingLiters: orderPayload.tankRemainingLiters !== undefined ? orderPayload.tankRemainingLiters : 0,
+      requestedLiters: orderPayload.requestedLiters || orderPayload.tankCapacity || 2000,
       pricePerLiter: orderPayload.pricePerLiter || settings.defaultSellingPricePerLiter,
-      totalAmount: (orderPayload.requestedLiters || 1500) * (orderPayload.pricePerLiter || settings.defaultSellingPricePerLiter),
+      totalAmount: (orderPayload.requestedLiters || orderPayload.tankCapacity || 2000) * (orderPayload.pricePerLiter || settings.defaultSellingPricePerLiter),
       source: orderPayload.source || 'manager_manual',
       createdAt: new Date().toISOString(),
       status: 'waiting_clustering',
@@ -764,16 +780,55 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // Trigger Driver GPS event simulator
+  // Batch SMS Ingestion (from Manager's phone inbox paste or Android bridge)
+  const importSabafonSMSBatch = async (
+    rawBlob: string,
+    senderNumber?: string
+  ): Promise<{
+    success: boolean;
+    message: string;
+    processedCount?: number;
+    duplicateCount?: number;
+    rejectedCount?: number;
+  }> => {
+    try {
+      const res = await fetch('/api/sms/receive-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rawBlob,
+          senderNumber: senderNumber || settings.driverSabafonNumber,
+        }),
+      });
+      const json = await res.json();
+      if (res.ok && json) {
+        await fetchState();
+        return {
+          success: Boolean(json.success),
+          message: json.message || 'تمت معالجة الرسائل بنجاح',
+          processedCount: json.processedCount,
+          duplicateCount: json.duplicateCount,
+          rejectedCount: json.rejectedCount,
+        };
+      }
+      return { success: false, message: json.error || 'تعذر قراءة الرسائل' };
+    } catch (e) {
+      console.error(e);
+      return { success: false, message: 'خطأ في الاتصال بالخادم' };
+    }
+  };
+
+  // Trigger Driver GPS event & build/send Sabafon SMS
   const triggerDriverGPSUpdate = (
     eventType: GPSEventType,
     lat: number,
     lng: number,
-    speed: number = 0
-  ) => {
-    const activeTrip = trips.find((t) => t.status === 'in_progress');
+    speed: number = 0,
+    customerId?: string
+  ): { rawSms: string; sentViaNativeBridge: boolean } => {
+    const activeTrip = trips.find((t) => t.status === 'in_progress') || trips.find((t) => t.status === 'approved');
     const tripNumber = activeTrip?.tripNumber || 'TRIP-2026-0002';
-    const seq = (smsLogs.length || 0) + 1;
+    const seq = (smsLogs.length || 0) + (offlineState.pendingGpsEvents.length || 0) + 1;
 
     const rawSms = buildWaterSMS({
       tripNumber,
@@ -782,9 +837,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
       lng,
       speed,
       sequenceNumber: seq,
+      customerId,
     });
 
-    // If online, send directly to server SMS gateway
+    // Optional Native Android APK Bridge (when wrapped with WebView JavascriptInterface)
+    let sentViaNativeBridge = false;
+    if (typeof window !== 'undefined' && typeof window.MiyahnaAndroidSMS?.sendSms === 'function') {
+      try {
+        sentViaNativeBridge = Boolean(
+          window.MiyahnaAndroidSMS.sendSms(settings.sabafonCenterNumber, rawSms)
+        );
+      } catch (bridgeErr) {
+        console.warn('Android SMS bridge sendSms failed:', bridgeErr);
+      }
+    }
+
+    // If online, also sync directly with server SMS gateway
     if (isOnline) {
       sendSabafonSMS(rawSms);
     } else {
@@ -798,6 +866,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         lat,
         lng,
         speed,
+        customerId,
         source: 'sms',
         rawSmsText: rawSms,
         sequenceNumber: seq,
@@ -814,6 +883,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         lat,
         lng,
         speed,
+        customerId,
         timeString: new Date().toLocaleTimeString('ar-YE', { hour: '2-digit', minute: '2-digit' }),
         rawText: rawSms,
         receivedAt: new Date().toISOString(),
@@ -822,6 +892,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const nextOff = queueGpsAndSms(offlineState, gps, sms);
       setOfflineState(nextOff);
     }
+
+    return { rawSms, sentViaNativeBridge };
   };
 
   // Sync Offline Driver Data back to server
@@ -897,6 +969,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         resetDemoData,
         clearDemoData,
         sendSabafonSMS,
+        importSabafonSMSBatch,
         triggerDriverGPSUpdate,
         syncOfflineData,
         savedRole,

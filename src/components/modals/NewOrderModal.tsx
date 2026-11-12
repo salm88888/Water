@@ -4,7 +4,7 @@
  * Miyahna - New Water Order Modal with Tank Auto-fill & Duplicate Detection
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Droplet,
@@ -32,14 +32,34 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
   const [district, setDistrict] = useState(customers[0]?.district || 'حي الروضة');
   const [addressDetails, setAddressDetails] = useState(customers[0]?.addressDetails || '');
   const [tankCapacity, setTankCapacity] = useState<number>(customers[0]?.tankCapacityLiters || 2000);
-  const [tankRemaining, setTankRemaining] = useState<number>(customers[0]?.tankRemainingLiters || 500);
-  const [requestedLiters, setRequestedLiters] = useState<number>(1500);
+  const [tankRemaining, setTankRemaining] = useState<number>(0);
+  const [requestedLiters, setRequestedLiters] = useState<number>(customers[0]?.tankCapacityLiters || 2000);
   const [pricePerLiter, setPricePerLiter] = useState<number>(settings.defaultSellingPricePerLiter);
   const [source, setSource] = useState<OrderSource>('phone');
   const [isUrgent, setIsUrgent] = useState(false);
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      const first = customers.find((cust) => cust.id === selectedCustomerId) || customers[0];
+      if (first) {
+        setSelectedCustomerId(first.id);
+        setCustomerName(first.name);
+        setPhone(first.phone);
+        setDistrict(first.district);
+        setAddressDetails(first.addressDetails);
+        setTankCapacity(first.tankCapacityLiters);
+        setTankRemaining(0);
+        setRequestedLiters(first.tankCapacityLiters);
+      } else {
+        setTankRemaining(0);
+        setRequestedLiters(tankCapacity);
+      }
+      setPricePerLiter(settings.defaultSellingPricePerLiter);
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -52,11 +72,9 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
       setDistrict(c.district);
       setAddressDetails(c.addressDetails);
       setTankCapacity(c.tankCapacityLiters);
-      const rem = c.tankRemainingLiters !== undefined ? c.tankRemainingLiters : 0;
-      setTankRemaining(rem);
-      // Auto-suggest fill quantity: max - remaining
-      const suggested = Math.max(500, c.tankCapacityLiters - rem);
-      setRequestedLiters(suggested);
+      // Always assume customer tank is empty (0 liters)
+      setTankRemaining(0);
+      setRequestedLiters(c.tankCapacityLiters);
     }
   };
 
@@ -195,7 +213,7 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
           {/* Tank Capacity Rules Check */}
           <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2">
             <div className="flex justify-between items-center">
-              <span className="font-semibold text-slate-800">قواعد سعة الخزان واقتراح الكمية:</span>
+              <span className="font-semibold text-slate-800">قواعد سعة الخزان (يفترض أن الخزان فارغ 0 لتر):</span>
               <span className="text-[11px] text-sky-700 font-mono">سعة الخزان: {tankCapacity.toLocaleString()}L</span>
             </div>
 
@@ -204,13 +222,15 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
                 <label className="block text-slate-600 text-[11px] mb-1">الماء المتبقي بالخزان (لتر)</label>
                 <input
                   type="number"
+                  min={0}
+                  max={tankCapacity}
                   value={tankRemaining}
                   onChange={(e) => {
-                    const rem = Number(e.target.value);
+                    const rem = Math.max(0, Number(e.target.value) || 0);
                     setTankRemaining(rem);
-                    setRequestedLiters(Math.max(500, tankCapacity - rem));
+                    setRequestedLiters(Math.max(0, tankCapacity - rem));
                   }}
-                  className="w-full p-2 border border-slate-200 rounded-lg font-mono text-center"
+                  className="w-full p-2 border border-slate-200 rounded-lg font-mono text-center bg-white"
                 />
               </div>
 
@@ -223,13 +243,13 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
                   required
                   value={requestedLiters}
                   onChange={(e) => setRequestedLiters(Number(e.target.value))}
-                  className="w-full p-2 border border-slate-200 rounded-lg font-mono font-bold text-sky-800 text-center"
+                  className="w-full p-2 border border-slate-200 rounded-lg font-mono font-bold text-sky-800 text-center bg-white"
                 />
               </div>
             </div>
 
             <div className="text-[10px] text-slate-500 leading-normal">
-              المقترح التلقائي للتعبئة = {tankCapacity - tankRemaining} لتر حتى امتلاء الخزان بالكامل.
+              يفترض النظام دائماً أن خزان الزبون فارغ (0 لتر)، لذا الكمية المقترحة للتعبئة الكاملة = {(tankCapacity - tankRemaining).toLocaleString()} لتر.
             </div>
           </div>
 

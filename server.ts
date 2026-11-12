@@ -100,6 +100,7 @@ loadDatabase();
 async function startServer() {
   const app = express();
   app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
 
   // API Routes
   const router = express.Router();
@@ -129,7 +130,7 @@ async function startServer() {
       lat: payload.lat || db.settings.plantLocation.lat + 0.005,
       lng: payload.lng || db.settings.plantLocation.lng + 0.005,
       tankCapacityLiters: Number(payload.tankCapacityLiters) || 2000,
-      tankRemainingLiters: payload.tankRemainingLiters !== undefined ? Number(payload.tankRemainingLiters) : undefined,
+      tankRemainingLiters: payload.tankRemainingLiters !== undefined ? Number(payload.tankRemainingLiters) : 0,
       notes: payload.notes || '',
       createdAt: new Date().toISOString(),
       isActive: true,
@@ -189,7 +190,7 @@ async function startServer() {
       lat: payload.lat,
       lng: payload.lng,
       tankCapacity: Number(payload.tankCapacity) || 2000,
-      tankRemainingLiters: payload.tankRemainingLiters !== undefined ? Number(payload.tankRemainingLiters) : undefined,
+      tankRemainingLiters: payload.tankRemainingLiters !== undefined ? Number(payload.tankRemainingLiters) : 0,
       requestedLiters,
       pricePerLiter,
       totalAmount,
@@ -415,7 +416,7 @@ async function startServer() {
     if (customer) {
       customer.totalOrdersCount += 1;
       customer.totalLitersDelivered += stop.deliveredLiters;
-      customer.tankRemainingLiters = (customer.tankCapacityLiters || 2000); // filled
+      customer.tankRemainingLiters = 0; // Assume customer tank is always empty (0L)
     }
 
     // Recalculate trip remaining water
@@ -468,26 +469,22 @@ async function startServer() {
     res.json({ success: true, data: trip });
   });
 
-  // 8. SMS Gateway Receiver Webhook (Sabafon GSM Modem or Gateway App)
-  router.post('/sms/receive', (req: Request, res: Response) => {
-    const { rawText, senderNumber } = req.body;
-    if (!rawText) {
-      return res.status(400).json({ success: false, error: 'نص الرسالة فارغ' });
-    }
-
+  // 8. SMS Gateway Receiver Webhook (Sabafon GSM Modem, SMS Forwarder App, or Phone Batch Reader)
+  const processIncomingSms = (rawText: string, senderNumberInput?: string) => {
     const parsed = parseSabafonSMS(rawText);
-    const sender = senderNumber || db.settings.driverSabafonNumber;
-    const messageId = `MSG-${Date.now()}-${parsed.sequenceNumber}`;
+    const sender = (senderNumberInput || '').trim() || db.settings.driverSabafonNumber;
+    const messageId = `MSG-${Date.now()}-${Math.floor(Math.random() * 1000)}-${parsed.sequenceNumber}`;
 
     // Verify sender matches authorized driver Sabafon number (normalized last 9 digits)
     const normalizePhone = (p: string) => p.replace(/\D/g, '').slice(-9);
     if (
-      senderNumber &&
+      senderNumberInput &&
+      senderNumberInput.trim() &&
       db.settings.driverSabafonNumber &&
-      normalizePhone(senderNumber) !== normalizePhone(db.settings.driverSabafonNumber)
+      normalizePhone(senderNumberInput) !== normalizePhone(db.settings.driverSabafonNumber)
     ) {
       const unauthorizedMsg: SMSMessage = {
-        id: `sms-${Date.now()}`,
+        id: `sms-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         messageId,
         senderNumber: sender,
         tripId: 'UNAUTHORIZED',
@@ -503,17 +500,20 @@ async function startServer() {
         statusReason: `تم رفض الرسالة: رقم المرسل (${sender}) غير مطابق لرقم السائق المعتمد (${db.settings.driverSabafonNumber})`,
       };
       db.smsLogs.unshift(unauthorizedMsg);
-      saveDatabase();
-      return res.status(403).json({
-        success: false,
-        error: `رقم المرسل غير مصرح به. الرقم المعتمد حالياً هو: ${db.settings.driverSabafonNumber}`,
-        log: unauthorizedMsg,
-      });
+      return {
+        statusCode: 403,
+        outcome: 'rejected' as const,
+        payload: {
+          success: false,
+          error: `رقم المرسل غير مصرح به. الرقم المعتمد حالياً هو: ${db.settings.driverSabafonNumber}`,
+          log: unauthorizedMsg,
+        },
+      };
     }
 
     if (!parsed.isValid) {
       const invalidMsg: SMSMessage = {
-        id: `sms-${Date.now()}`,
+        id: `sms-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         messageId,
         senderNumber: sender,
         tripId: 'UNKNOWN',
@@ -529,15 +529,18 @@ async function startServer() {
         statusReason: parsed.errorMessage,
       };
       db.smsLogs.unshift(invalidMsg);
-      saveDatabase();
-      return res.status(400).json({ success: false, error: parsed.errorMessage, log: invalidMsg });
+      return {
+        statusCode: 400,
+        outcome: 'invalid' as const,
+        payload: { success: false, error: parsed.errorMessage, log: invalidMsg },
+      };
     }
 
     // Check Duplicate
     const isDup = isDuplicateMessage(db.smsLogs, parsed.tripNumber, parsed.sequenceNumber, parsed.eventType);
     if (isDup) {
       const dupMsg: SMSMessage = {
-        id: `sms-${Date.now()}`,
+        id: `sms-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
         messageId,
         senderNumber: sender,
         tripId: parsed.tripNumber,
@@ -553,13 +556,16 @@ async function startServer() {
         statusReason: 'تم رفض الرسالة لأنها مكررة بنفس الرقم التسلسلي والحدث',
       };
       db.smsLogs.unshift(dupMsg);
-      saveDatabase();
-      return res.json({ success: true, duplicate: true, message: 'رسالة مكررة تم تجاهلها وتوثيقها' });
+      return {
+        statusCode: 200,
+        outcome: 'duplicate' as const,
+        payload: { success: true, duplicate: true, message: 'رسالة مكررة تم تجاهلها وتوثيقها' },
+      };
     }
 
     // Save processed SMS
     const validMsg: SMSMessage = {
-      id: `sms-${Date.now()}`,
+      id: `sms-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       messageId,
       senderNumber: sender,
       tripId: parsed.tripNumber,
@@ -579,7 +585,7 @@ async function startServer() {
 
     // Create GPS Event
     const gpsEvent: GPSEvent = {
-      id: `gps-${Date.now()}`,
+      id: `gps-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       tripId: parsed.tripNumber,
       tripNumber: parsed.tripNumber,
       timestamp: new Date().toISOString(),
@@ -624,8 +630,89 @@ async function startServer() {
       }
     }
 
+    return {
+      statusCode: 200,
+      outcome: 'processed' as const,
+      payload: { success: true, processed: true, event: gpsEvent, sms: validMsg },
+    };
+  };
+
+  router.post('/sms/receive', (req: Request, res: Response) => {
+    const rawText = req.body.rawText || req.body.text || req.body.message || req.body.body || '';
+    const senderNumber = req.body.senderNumber || req.body.from || req.body.sender || req.body.phone;
+    if (!rawText || typeof rawText !== 'string' || !rawText.trim()) {
+      return res.status(400).json({ success: false, error: 'نص الرسالة فارغ' });
+    }
+
+    const result = processIncomingSms(rawText, senderNumber);
     saveDatabase();
-    res.json({ success: true, processed: true, event: gpsEvent, sms: validMsg });
+    return res.status(result.statusCode).json(result.payload);
+  });
+
+  router.post('/sms/receive-batch', (req: Request, res: Response) => {
+    const { rawBlob, messages, senderNumber, from } = req.body;
+    const sender = senderNumber || from;
+    let blocks: string[] = [];
+
+    if (Array.isArray(messages)) {
+      blocks = messages.map((m) => String(m || '').trim()).filter(Boolean);
+    } else if (typeof rawBlob === 'string' && rawBlob.trim()) {
+      const clean = rawBlob.replace(/\r\n/g, '\n').trim();
+      const matches = [...clean.matchAll(/WATER\s+TRACK/gi)];
+      if (matches.length === 0) {
+        blocks = [clean];
+      } else {
+        for (let i = 0; i < matches.length; i++) {
+          const start = matches[i].index ?? 0;
+          const end = i + 1 < matches.length ? (matches[i + 1].index ?? clean.length) : clean.length;
+          const chunk = clean.slice(start, end).trim();
+          const lines = chunk.split('\n').map((l) => l.trim()).filter(Boolean);
+          const payloadLines: string[] = [];
+          for (const line of lines) {
+            if (
+              /^WATER\s+TRACK/i.test(line) ||
+              /^(TRIP|EVENT|CUSTOMER|LAT|LON|LNG|SPEED|TIME|SEQ)\s*:/i.test(line)
+            ) {
+              payloadLines.push(line);
+            } else if (payloadLines.length > 0 && line.includes(':')) {
+              break;
+            }
+          }
+          if (payloadLines.length > 0) blocks.push(payloadLines.join('\n'));
+        }
+      }
+    }
+
+    if (blocks.length === 0) {
+      return res.status(400).json({ success: false, error: 'لم يتم العثور على رسائل لقراءتها' });
+    }
+
+    let processedCount = 0;
+    let duplicateCount = 0;
+    let rejectedCount = 0;
+    let invalidCount = 0;
+
+    const results = blocks.map((block) => {
+      const r = processIncomingSms(block, sender);
+      if (r.outcome === 'processed') processedCount++;
+      else if (r.outcome === 'duplicate') duplicateCount++;
+      else if (r.outcome === 'rejected') rejectedCount++;
+      else invalidCount++;
+      return { outcome: r.outcome, ...r.payload };
+    });
+
+    saveDatabase();
+
+    return res.json({
+      success: processedCount > 0 || duplicateCount > 0,
+      totalCount: blocks.length,
+      processedCount,
+      duplicateCount,
+      rejectedCount,
+      invalidCount,
+      results,
+      message: `تم فحص ${blocks.length} رسالة: قُبلت ${processedCount}، مكررة ${duplicateCount}، مرفوضة/غير صالحة ${rejectedCount + invalidCount}`,
+    });
   });
 
   // 9. Driver Offline Sync Endpoint
@@ -817,6 +904,10 @@ async function startServer() {
 
   router.put('/settings', (req: Request, res: Response) => {
     db.settings = { ...db.settings, ...req.body };
+    if (req.body.plantLocation && db.truck.status === 'idle') {
+      db.truck.lastLat = db.settings.plantLocation.lat;
+      db.truck.lastLng = db.settings.plantLocation.lng;
+    }
     saveDatabase();
     res.json({ success: true, data: db.settings });
   });
@@ -854,8 +945,8 @@ async function startServer() {
         driverId: 'driver-1',
         driverName: 'منصور صالح الحارثي',
         status: 'idle',
-        lastLat: DEFAULT_SETTINGS.plantLocation.lat,
-        lastLng: DEFAULT_SETTINGS.plantLocation.lng,
+        lastLat: db.settings.plantLocation.lat,
+        lastLng: db.settings.plantLocation.lng,
         lastSpeed: 0,
         lastUpdateTimestamp: new Date().toISOString(),
         lastEvent: 'RETURN_PLANT',

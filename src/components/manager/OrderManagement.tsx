@@ -184,7 +184,7 @@ export const OrderManagement: React.FC<OrderManagementProps> = ({ onOpenNewOrder
                       <div>{ord.requestedLiters.toLocaleString()} لتر</div>
                       <div className="text-[10px] text-slate-400 font-normal">
                         سعة الخزان: {ord.tankCapacity.toLocaleString()}L
-                        {ord.tankRemainingLiters !== undefined && ` (باقي ${ord.tankRemainingLiters}L)`}
+                        {` (${(ord.tankRemainingLiters ?? 0) === 0 ? 'فارغ 0L' : `باقي ${ord.tankRemainingLiters}L`})`}
                       </div>
                     </td>
                     <td className="py-3 px-4 font-mono">

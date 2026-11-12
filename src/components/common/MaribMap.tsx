@@ -55,6 +55,25 @@ export const MaribMap: React.FC<MaribMapProps> = ({
 
       layerGroupRef.current = L.layerGroup().addTo(map);
       mapInstanceRef.current = map;
+
+      // Ensure Leaflet renders tiles properly after layout transitions
+      setTimeout(() => {
+        map.invalidateSize();
+      }, 100);
+
+      if (typeof ResizeObserver !== 'undefined' && mapContainerRef.current) {
+        const observer = new ResizeObserver(() => {
+          map.invalidateSize();
+        });
+        observer.observe(mapContainerRef.current);
+        return () => {
+          observer.disconnect();
+          if (mapInstanceRef.current) {
+            mapInstanceRef.current.remove();
+            mapInstanceRef.current = null;
+          }
+        };
+      }
     }
 
     return () => {
@@ -244,18 +263,22 @@ export const MaribMap: React.FC<MaribMapProps> = ({
 
     // Fit map bounds
     if (bounds.isValid()) {
+      mapInstanceRef.current.invalidateSize();
       mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
     }
   }, [settings, truck, customerStops, allCustomers, gpsEvents, selectedStopSequence]);
 
   return (
-    <div className="relative w-full rounded-xl overflow-hidden border border-slate-200 shadow-sm bg-slate-100">
-      <div ref={mapContainerRef} style={{ height, width: '100%' }} />
+    <div
+      className="relative w-full rounded-xl overflow-hidden border border-slate-200 shadow-sm bg-slate-100"
+      style={{ height, minHeight: '280px' }}
+    >
+      <div ref={mapContainerRef} style={{ height: '100%', width: '100%', minHeight: '280px' }} />
       {/* Map Legend */}
       <div className="absolute bottom-3 right-3 bg-white/95 backdrop-blur-sm border border-slate-200 px-3 py-2 rounded-lg shadow-md z-[1000] text-xs text-slate-700 space-y-1">
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-full bg-sky-700"></div>
-          <span>مصنع مياهنا المركزي</span>
+          <span>{settings.plantLocation.name}</span>
         </div>
         <div className="flex items-center gap-2">
           <div className="w-3 h-3 rounded-full bg-amber-600"></div>

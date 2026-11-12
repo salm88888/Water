@@ -30,11 +30,17 @@ import {
   User,
   LogOut,
   Lock,
+  MessageSquare,
+  Copy,
+  Navigation,
+  X,
+  AlertTriangle,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { TripCustomerStop } from '../../types';
+import { GPSEventType, TripCustomerStop } from '../../types';
 import { ManagerPinModal } from '../auth/ManagerPinModal';
 import { LocationPickerMapModal } from '../common/LocationPickerMapModal';
+import { buildSmsUri } from '../../lib/sms-parser';
 
 export const DriverApp: React.FC = () => {
   const {
@@ -61,7 +67,7 @@ export const DriverApp: React.FC = () => {
   // Active Trip
   const activeTrip = trips.find((t) => t.status === 'in_progress' || t.status === 'approved') || trips[0];
 
-  const [activeTab, setActiveTab] = useState<'current_trip' | 'new_order' | 'offline_queue'>('current_trip');
+  const [activeTab, setActiveTab] = useState<'current_trip' | 'new_order' | 'sms_control' | 'offline_queue'>('current_trip');
   const [selectedStopIndex, setSelectedStopIndex] = useState(0);
 
   // Delivery Form State
@@ -74,6 +80,20 @@ export const DriverApp: React.FC = () => {
   const [isMapPickerOpen, setIsMapPickerOpen] = useState(false);
   const [hasPickedFromMap, setHasPickedFromMap] = useState(false);
 
+  // Driver Phone SMS Control State
+  const [lastOutgoingSms, setLastOutgoingSms] = useState<{
+    text: string;
+    eventType: GPSEventType;
+    timestamp: string;
+    sentViaBridge: boolean;
+    lat: number;
+    lng: number;
+    gpsSource: 'device_gps' | 'stop_fallback';
+  } | null>(null);
+  const [isCapturingGps, setIsCapturingGps] = useState(false);
+  const [smsCopyFeedback, setSmsCopyFeedback] = useState<string | null>(null);
+  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+
   // Quick Offline Order Form
   const [newOrderForm, setNewOrderForm] = useState({
     customerName: '',
@@ -81,13 +101,66 @@ export const DriverApp: React.FC = () => {
     district: 'حي الروضة',
     addressDetails: '',
     tankCapacity: 2000,
-    requestedLiters: 1500,
+    requestedLiters: 2000,
     lat: 15.4712,
     lng: 45.3340,
     notes: '',
   });
 
   const currentStop: TripCustomerStop | undefined = activeTrip?.customerStops[selectedStopIndex];
+
+  // Captures real phone GPS coordinates (when allowed) and prepares/dispatches the WATER TRACK SMS
+  const captureGpsAndPrepareSms = (
+    eventType: GPSEventType,
+    fallbackLat: number,
+    fallbackLng: number,
+    speed: number = 0,
+    customerId?: string
+  ) => {
+    const dispatchWithCoords = (
+      lat: number,
+      lng: number,
+      gpsSource: 'device_gps' | 'stop_fallback'
+    ) => {
+      const result = triggerDriverGPSUpdate(eventType, lat, lng, speed, customerId);
+      setLastOutgoingSms({
+        text: result.rawSms,
+        eventType,
+        timestamp: new Date().toLocaleTimeString('ar-YE', { hour: '2-digit', minute: '2-digit' }),
+        sentViaBridge: result.sentViaNativeBridge,
+        lat,
+        lng,
+        gpsSource,
+      });
+      setSmsCopyFeedback(null);
+      setIsCapturingGps(false);
+    };
+
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      setIsCapturingGps(true);
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          dispatchWithCoords(pos.coords.latitude, pos.coords.longitude, 'device_gps');
+        },
+        () => {
+          dispatchWithCoords(fallbackLat, fallbackLng, 'stop_fallback');
+        },
+        { enableHighAccuracy: true, timeout: 2500, maximumAge: 15000 }
+      );
+    } else {
+      dispatchWithCoords(fallbackLat, fallbackLng, 'stop_fallback');
+    }
+  };
+
+  const handleCopyOutgoingSms = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setSmsCopyFeedback('تم نسخ نص الرسالة بنجاح');
+      setTimeout(() => setSmsCopyFeedback(null), 2500);
+    } catch {
+      setSmsCopyFeedback('تعذر النسخ التلقائي، انسخ النص يدوياً');
+    }
+  };
 
   // Initialize stop input values when selecting a stop
   const handleSelectStop = (index: number) => {
@@ -104,7 +177,7 @@ export const DriverApp: React.FC = () => {
   // Step 1: Arrive at Customer
   const handleArriveAtCustomer = () => {
     if (!currentStop) return;
-    triggerDriverGPSUpdate('ARRIVAL', currentStop.lat, currentStop.lng, 0);
+    captureGpsAndPrepareSms('ARRIVAL', currentStop.lat, currentStop.lng, 0, currentStop.customerId);
   };
 
   // Step 2: Start Unloading
@@ -144,7 +217,7 @@ export const DriverApp: React.FC = () => {
   // Step 4: Depart from Customer
   const handleDepartCustomer = () => {
     if (!currentStop) return;
-    triggerDriverGPSUpdate('DEPARTURE', currentStop.lat, currentStop.lng, 15);
+    captureGpsAndPrepareSms('DEPARTURE', currentStop.lat, currentStop.lng, 20, currentStop.customerId);
   };
 
   // Handle Quick Offline Order Submission
@@ -158,6 +231,7 @@ export const DriverApp: React.FC = () => {
       district: newOrderForm.district,
       addressDetails: newOrderForm.addressDetails,
       tankCapacity: Number(newOrderForm.tankCapacity),
+      tankRemainingLiters: 0,
       requestedLiters: Number(newOrderForm.requestedLiters),
       pricePerLiter: settings.defaultSellingPricePerLiter,
       totalAmount: Number(newOrderForm.requestedLiters) * settings.defaultSellingPricePerLiter,
@@ -171,7 +245,7 @@ export const DriverApp: React.FC = () => {
       district: 'حي الروضة',
       addressDetails: '',
       tankCapacity: 2000,
-      requestedLiters: 1500,
+      requestedLiters: 2000,
       lat: 15.4712,
       lng: 45.3340,
       notes: '',
@@ -256,37 +330,104 @@ export const DriverApp: React.FC = () => {
       </div>
 
       {/* Driver Tabs (Large tactile buttons) */}
-      <div className="grid grid-cols-3 gap-1 p-2 bg-slate-950 border-b border-slate-800 text-xs">
+      <div className="grid grid-cols-4 gap-1 p-2 bg-slate-950 border-b border-slate-800 text-[11px]">
         <button
           onClick={() => setActiveTab('current_trip')}
-          className={`py-2 rounded-lg font-bold transition-all ${
+          className={`py-2 px-1 rounded-lg font-bold transition-all ${
             activeTab === 'current_trip' ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
           }`}
         >
-          الرحلة الحالية
+          الرحلة
+        </button>
+        <button
+          onClick={() => setActiveTab('sms_control')}
+          className={`py-2 px-1 rounded-lg font-bold transition-all flex items-center justify-center gap-1 ${
+            activeTab === 'sms_control' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
+          }`}
+        >
+          <MessageSquare className="w-3 h-3" />
+          <span>رسائل SMS</span>
         </button>
         <button
           onClick={() => setActiveTab('new_order')}
-          className={`py-2 rounded-lg font-bold transition-all flex items-center justify-center gap-1 ${
+          className={`py-2 px-1 rounded-lg font-bold transition-all flex items-center justify-center gap-1 ${
             activeTab === 'new_order' ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
           }`}
         >
-          <Plus className="w-3.5 h-3.5" />
+          <Plus className="w-3 h-3" />
           <span>طلب جديد</span>
         </button>
         <button
           onClick={() => setActiveTab('offline_queue')}
-          className={`py-2 rounded-lg font-bold transition-all flex items-center justify-center gap-1 ${
+          className={`py-2 px-1 rounded-lg font-bold transition-all flex items-center justify-center gap-1 ${
             activeTab === 'offline_queue' ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'
           }`}
         >
           <RefreshCw className="w-3 h-3" />
-          <span>المزامنة ({pendingQueueCount})</span>
+          <span>مزامنة ({pendingQueueCount})</span>
         </button>
       </div>
 
       {/* Content Area */}
       <div className="flex-1 p-3 overflow-y-auto space-y-4">
+        {/* Outgoing Phone SMS Ready-to-Send Banner (shown when driver triggers an event) */}
+        {lastOutgoingSms && (
+          <div className="bg-amber-950/80 border border-amber-600/70 rounded-2xl p-3 space-y-2.5 shadow-lg">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="w-4 h-4 text-amber-400 shrink-0" />
+                <div>
+                  <div className="text-xs font-bold text-amber-200">
+                    {lastOutgoingSms.sentViaBridge
+                      ? 'تم إرسال الرسالة تلقائياً عبر شريحة السائق (Android APK)'
+                      : `رسالة التتبع جاهزة للإرسال إلى جوال المدير (${settings.sabafonCenterNumber})`}
+                  </div>
+                  <div className="text-[10px] text-amber-300/80 font-mono">
+                    {lastOutgoingSms.eventType} · {lastOutgoingSms.gpsSource === 'device_gps' ? 'GPS فعلي من الهاتف' : 'إحداثيات المحطة'} ({lastOutgoingSms.lat.toFixed(4)}, {lastOutgoingSms.lng.toFixed(4)})
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLastOutgoingSms(null)}
+                className="p-1 text-amber-300 hover:text-white rounded"
+                title="إغلاق"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <pre
+              className="bg-slate-950/90 text-emerald-300 font-mono text-[10px] p-2 rounded-lg border border-slate-700 overflow-x-auto whitespace-pre-wrap"
+              style={{ direction: 'ltr', textAlign: 'left' }}
+            >
+              {lastOutgoingSms.text}
+            </pre>
+
+            <div className="grid grid-cols-2 gap-2">
+              <a
+                href={buildSmsUri(settings.sabafonCenterNumber, lastOutgoingSms.text)}
+                className="py-2.5 px-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-[11px] flex items-center justify-center gap-1.5 shadow text-center"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>إرسال من تطبيق رسائل الجوال</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => handleCopyOutgoingSms(lastOutgoingSms.text)}
+                className="py-2.5 px-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-xl text-[11px] flex items-center justify-center gap-1.5 border border-slate-600"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>نسخ نص الرسالة</span>
+              </button>
+            </div>
+
+            {smsCopyFeedback && (
+              <div className="text-[11px] text-emerald-300 font-semibold text-center">{smsCopyFeedback}</div>
+            )}
+          </div>
+        )}
+
         {/* Tab 1: Current Trip & Delivery Workflow */}
         {activeTab === 'current_trip' && (
           <div className="space-y-4">
@@ -307,7 +448,15 @@ export const DriverApp: React.FC = () => {
 
                 {activeTrip.status === 'approved' && (
                   <button
-                    onClick={() => startTrip(activeTrip.id)}
+                    onClick={() => {
+                      startTrip(activeTrip.id);
+                      captureGpsAndPrepareSms(
+                        'START',
+                        settings.plantLocation.lat,
+                        settings.plantLocation.lng,
+                        0
+                      );
+                    }}
                     className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg flex items-center gap-1.5 shadow"
                   >
                     <Play className="w-4 h-4 fill-white" />
@@ -317,7 +466,15 @@ export const DriverApp: React.FC = () => {
 
                 {activeTrip.status === 'in_progress' && (
                   <button
-                    onClick={() => completeTrip(activeTrip.id)}
+                    onClick={() => {
+                      completeTrip(activeTrip.id);
+                      captureGpsAndPrepareSms(
+                        'RETURN_PLANT',
+                        settings.plantLocation.lat,
+                        settings.plantLocation.lng,
+                        0
+                      );
+                    }}
                     className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded-lg"
                   >
                     إنهاء والعودة
@@ -517,22 +674,41 @@ export const DriverApp: React.FC = () => {
                 />
               </div>
 
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">الحي بمأرب</label>
+                <select
+                  value={newOrderForm.district}
+                  onChange={(e) => setNewOrderForm({ ...newOrderForm, district: e.target.value })}
+                  className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-lg text-white"
+                >
+                  <option value="حي الروضة">حي الروضة</option>
+                  <option value="حي الشركة">حي الشركة</option>
+                  <option value="المجمع الحكومي">المجمع الحكومي</option>
+                  <option value="حي السلام">حي السلام</option>
+                  <option value="حي المطار">حي المطار</option>
+                  <option value="حي الفاو">حي الفاو</option>
+                  <option value="الخسيف">الخسيف</option>
+                  <option value="حصون آل جلال">حصون آل جلال</option>
+                </select>
+              </div>
+
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-slate-300 font-semibold mb-1">الحي بمأرب</label>
+                  <label className="block text-slate-300 font-semibold mb-1">سعة الخزان (فارغ 0L)</label>
                   <select
-                    value={newOrderForm.district}
-                    onChange={(e) => setNewOrderForm({ ...newOrderForm, district: e.target.value })}
-                    className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-lg text-white"
+                    value={newOrderForm.tankCapacity}
+                    onChange={(e) => {
+                      const cap = Number(e.target.value);
+                      setNewOrderForm({ ...newOrderForm, tankCapacity: cap, requestedLiters: cap });
+                    }}
+                    className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono"
                   >
-                    <option value="حي الروضة">حي الروضة</option>
-                    <option value="حي الشركة">حي الشركة</option>
-                    <option value="المجمع الحكومي">المجمع الحكومي</option>
-                    <option value="حي السلام">حي السلام</option>
-                    <option value="حي المطار">حي المطار</option>
-                    <option value="حي الفاو">حي الفاو</option>
-                    <option value="الخسيف">الخسيف</option>
-                    <option value="حصون آل جلال">حصون آل جلال</option>
+                    <option value={500}>500 لتر</option>
+                    <option value={1000}>1,000 لتر</option>
+                    <option value={2000}>2,000 لتر</option>
+                    <option value={3000}>3,000 لتر</option>
+                    <option value={5000}>5,000 لتر</option>
+                    <option value={6000}>6,000 لتر</option>
                   </select>
                 </div>
                 <div>
@@ -596,7 +772,190 @@ export const DriverApp: React.FC = () => {
           </div>
         )}
 
-        {/* Tab 3: Offline Queue & Sync */}
+        {/* Tab 3: Driver Phone SMS Control Center */}
+        {activeTab === 'sms_control' && (
+          <div className="space-y-4 text-xs">
+            <div className="bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-700">
+                <h3 className="font-bold text-sm text-amber-400 flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4" />
+                  <span>التحكم برسائل التتبع من جوال السائق</span>
+                </h3>
+                <span className="font-mono text-[10px] bg-slate-900 text-sky-400 px-2 py-0.5 rounded">
+                  إلى: {settings.sabafonCenterNumber}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-[11px] bg-slate-900/70 p-2.5 rounded-xl border border-slate-700/70">
+                <div>
+                  <span className="text-slate-400 block text-[10px]">شريحة السائق (المرسل):</span>
+                  <span className="font-mono font-bold text-white">{settings.driverSabafonNumber}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[10px]">جوال المدير (المستقبل):</span>
+                  <span className="font-mono font-bold text-emerald-400">{settings.sabafonCenterNumber}</span>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                عند الضغط على أي حالة بالأسفل، يلتقط التطبيق موقع <span className="font-bold text-sky-400">GPS الفعلي لجوال السائق</span> ويجهز رسالة سبأفون بالتنسيق المعتمد لفتحها في تطبيق الرسائل وإرسالها مباشرة لرقم المدير.
+              </p>
+
+              {/* Quick SMS Event Buttons */}
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={isCapturingGps}
+                  onClick={() =>
+                    captureGpsAndPrepareSms(
+                      'START',
+                      currentStop?.lat || settings.plantLocation.lat,
+                      currentStop?.lng || settings.plantLocation.lng,
+                      0
+                    )
+                  }
+                  className="py-3 px-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 shadow disabled:opacity-50"
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  <span>بدء الرحلة (START)</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isCapturingGps}
+                  onClick={() =>
+                    captureGpsAndPrepareSms(
+                      'HEARTBEAT_10M',
+                      currentStop?.lat || truck.lastLat || settings.plantLocation.lat,
+                      currentStop?.lng || truck.lastLng || settings.plantLocation.lng,
+                      30
+                    )
+                  }
+                  className="py-3 px-2 bg-sky-700 hover:bg-sky-600 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 shadow disabled:opacity-50"
+                >
+                  <Navigation className="w-3.5 h-3.5" />
+                  <span>تحديث الموقع الآن</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isCapturingGps}
+                  onClick={() =>
+                    captureGpsAndPrepareSms(
+                      'ARRIVAL',
+                      currentStop?.lat || settings.plantLocation.lat,
+                      currentStop?.lng || settings.plantLocation.lng,
+                      0,
+                      currentStop?.customerId
+                    )
+                  }
+                  className="py-3 px-2 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 shadow disabled:opacity-50"
+                >
+                  <MapPin className="w-3.5 h-3.5" />
+                  <span>وصول للعميل (ARRIVAL)</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isCapturingGps}
+                  onClick={() =>
+                    captureGpsAndPrepareSms(
+                      'DEPARTURE',
+                      currentStop?.lat || settings.plantLocation.lat,
+                      currentStop?.lng || settings.plantLocation.lng,
+                      20,
+                      currentStop?.customerId
+                    )
+                  }
+                  className="py-3 px-2 bg-indigo-700 hover:bg-indigo-600 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 shadow disabled:opacity-50"
+                >
+                  <ArrowRight className="w-3.5 h-3.5 rotate-180" />
+                  <span>مغادرة عميل (DEPARTURE)</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isCapturingGps}
+                  onClick={() =>
+                    captureGpsAndPrepareSms(
+                      'STOPPED',
+                      truck.lastLat || settings.plantLocation.lat,
+                      truck.lastLng || settings.plantLocation.lng,
+                      0
+                    )
+                  }
+                  className="py-3 px-2 bg-rose-700 hover:bg-rose-600 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 shadow disabled:opacity-50"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>تنبيه توقف / عطل</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isCapturingGps}
+                  onClick={() =>
+                    captureGpsAndPrepareSms(
+                      'RETURN_PLANT',
+                      settings.plantLocation.lat,
+                      settings.plantLocation.lng,
+                      0
+                    )
+                  }
+                  className="py-3 px-2 bg-slate-700 hover:bg-slate-600 text-white font-bold rounded-xl flex items-center justify-center gap-1.5 shadow disabled:opacity-50"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>عودة للمصنع</span>
+                </button>
+              </div>
+
+              {isCapturingGps && (
+                <div className="text-center text-sky-400 font-semibold text-[11px] animate-pulse">
+                  جاري التقاط إحداثيات GPS الفعلية من جوال السائق...
+                </div>
+              )}
+            </div>
+
+            {/* Queued Offline SMS ready to send over Sabafon cellular */}
+            <div className="bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h4 className="font-bold text-slate-200 flex items-center gap-1.5">
+                  <Radio className="w-4 h-4 text-sky-400" />
+                  <span>رسائل تتبع محفوظة للإرسال الخلوي ({offlineState.pendingGpsEvents.length})</span>
+                </h4>
+              </div>
+              {offlineState.pendingGpsEvents.length === 0 ? (
+                <p className="text-[11px] text-slate-400">
+                  لا توجد رسائل تتبع مؤجلة حالياً. اضغط أي زر أعلاه لتجهيز رسالة فورية.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {offlineState.pendingGpsEvents.map((gps) => {
+                    const smsBody = gps.rawSmsText || '';
+                    return (
+                      <div key={gps.id} className="bg-slate-900/90 border border-slate-700 rounded-xl p-2.5 space-y-2">
+                        <div className="flex items-center justify-between font-mono text-[10px] text-slate-300">
+                          <span className="text-amber-400 font-bold">{gps.eventType}</span>
+                          <span>SEQ: {String(gps.sequenceNumber).padStart(4, '0')}</span>
+                        </div>
+                        {smsBody && (
+                          <a
+                            href={buildSmsUri(settings.sabafonCenterNumber, smsBody)}
+                            className="w-full py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg flex items-center justify-center gap-1.5 text-[11px]"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                            <span>إرسال هذه الرسالة الآن عبر شريحة السائق</span>
+                          </a>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Tab 4: Offline Queue & Sync */}
         {activeTab === 'offline_queue' && (
           <div className="bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-4 text-xs">
             <div className="flex items-center justify-between pb-2 border-b border-slate-700">
@@ -613,10 +972,17 @@ export const DriverApp: React.FC = () => {
               عند التواجد في المصنع وتوفر شبكة الواي فاي أو الإنترنت، اضغط زر المزامنة لنقل كافة عمليات التسليم والطلبات ونقاط GPS تلقائياً إلى خادم المصنع.
             </p>
 
+            {syncFeedback && (
+              <div className="p-2.5 rounded-xl bg-emerald-950/70 border border-emerald-700 text-emerald-300 font-semibold text-xs flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 shrink-0" />
+                <span>{syncFeedback}</span>
+              </div>
+            )}
+
             <button
               onClick={async () => {
                 const count = await syncOfflineData();
-                alert(`تم بنجاح مزامنة ${count} عمليات مع خادم المصنع المركزي!`);
+                setSyncFeedback(`تمت بنجاح مزامنة ${count} عمليات مع خادم المصنع المركزي`);
               }}
               disabled={pendingQueueCount === 0}
               className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow disabled:opacity-40"

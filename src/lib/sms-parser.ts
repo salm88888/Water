@@ -153,3 +153,62 @@ export function isDuplicateMessage(
       msg.eventType === eventType
   );
 }
+
+/**
+ * Extracts one or more WATER TRACK SMS blocks from a pasted phone SMS inbox dump
+ */
+export function extractMultipleWaterSMS(rawBlob: string): string[] {
+  const clean = rawBlob.replace(/\r\n/g, '\n').trim();
+  if (!clean) return [];
+
+  const matches = [...clean.matchAll(/WATER\s+TRACK/gi)];
+  if (matches.length === 0) {
+    return [clean];
+  }
+
+  const messages: string[] = [];
+  for (let i = 0; i < matches.length; i++) {
+    const start = matches[i].index ?? 0;
+    const end = i + 1 < matches.length ? (matches[i + 1].index ?? clean.length) : clean.length;
+    const chunk = clean.slice(start, end).trim();
+
+    // Keep only lines that belong to the WATER TRACK payload
+    const lines = chunk.split('\n').map((l) => l.trim()).filter(Boolean);
+    const payloadLines: string[] = [];
+    for (const line of lines) {
+      if (
+        /^WATER\s+TRACK/i.test(line) ||
+        /^(TRIP|EVENT|CUSTOMER|LAT|LON|LNG|SPEED|TIME|SEQ)\s*:/i.test(line)
+      ) {
+        payloadLines.push(line);
+      } else if (payloadLines.length > 0 && line.includes(':')) {
+        // Stop if we hit a non-protocol metadata header like Date: or From:
+        break;
+      }
+    }
+
+    if (payloadLines.length > 0) {
+      messages.push(payloadLines.join('\n'));
+    }
+  }
+
+  return messages.length > 0 ? messages : [clean];
+}
+
+/**
+ * Builds a native sms: URI to launch the mobile phone's Messages app pre-filled
+ */
+export function buildSmsUri(phoneNumber: string, smsBody: string): string {
+  const cleanPhone = (phoneNumber || '').replace(/[^\d+]/g, '');
+  return `sms:${cleanPhone}?body=${encodeURIComponent(smsBody)}`;
+}
+
+declare global {
+  interface Window {
+    MiyahnaAndroidSMS?: {
+      sendSms?: (phoneNumber: string, body: string) => boolean;
+      readInbox?: (senderFilter?: string) => string[] | string;
+    };
+  }
+}
+
