@@ -1,50 +1,33 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
- * Miyahna - System Operational Manual & Field Technical Guides
+ * Miyahna - System Operational Manual & Technical Architecture Guides (Offline-First GPS, Zero SMS)
  */
 
 import React, { useState } from 'react';
 import {
   BookOpen,
   Smartphone,
-  Radio,
+  Navigation,
   Database,
   ShieldCheck,
-  Truck,
-  FileCode,
-  CheckCircle,
   Link2,
   Wifi,
   KeyRound,
-  Settings,
-  Copy,
+  Cpu,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
 export const DocumentationGuides: React.FC = () => {
-  const { settings, setManagerTab } = useApp();
-  const [activeTab, setActiveTab] = useState<'linking' | 'manager' | 'driver' | 'sms' | 'database' | 'offline'>('linking');
-  const [copiedUrl, setCopiedUrl] = useState(false);
-
-  const gatewayEndpoint =
-    typeof window !== 'undefined' ? `${window.location.origin}/api/sms/receive` : '/api/sms/receive';
-
-  const handleCopyEndpoint = () => {
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      navigator.clipboard.writeText(gatewayEndpoint);
-      setCopiedUrl(true);
-      setTimeout(() => setCopiedUrl(false), 2500);
-    }
-  };
+  const { settings } = useApp();
+  const [activeTab, setActiveTab] = useState<'linking' | 'manager' | 'driver' | 'gps' | 'offline' | 'database'>('linking');
 
   return (
     <div className="space-y-6 max-w-5xl">
-      {/* Header */}
       <div>
         <h2 className="text-lg font-bold text-slate-900">دليل المستخدم والتوثيق الفني لنظام مياهنا الذكي</h2>
         <p className="text-xs text-slate-500">
-          تعليمات ربط الهاتفين، دليل المدير العام، دليل السائق، إعداد شريحة سبأفون وبوابة SMS، وبنية قواعد البيانات
+          تعليمات ربط الهاتفين، دورة مخطط الرحلة والاعتماد، التتبع التلقائي عبر GPS واكتشاف التوقفات، العمل دون إنترنت، ومتطلبات خدمة الخلفية على Android
         </p>
       </div>
 
@@ -65,7 +48,7 @@ export const DocumentationGuides: React.FC = () => {
             activeTab === 'manager' ? 'bg-sky-700 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-50 border border-slate-200'
           }`}
         >
-          دليل المدير العام
+          دليل المدير العام والاعتماد
         </button>
         <button
           onClick={() => setActiveTab('driver')}
@@ -73,15 +56,15 @@ export const DocumentationGuides: React.FC = () => {
             activeTab === 'driver' ? 'bg-sky-700 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-50 border border-slate-200'
           }`}
         >
-          دليل تطبيق السائق (Android)
+          دليل تطبيق السائق (PWA)
         </button>
         <button
-          onClick={() => setActiveTab('sms')}
+          onClick={() => setActiveTab('gps')}
           className={`px-3.5 py-2 rounded-lg font-semibold transition-all cursor-pointer ${
-            activeTab === 'sms' ? 'bg-sky-700 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-50 border border-slate-200'
+            activeTab === 'gps' ? 'bg-sky-700 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-50 border border-slate-200'
           }`}
         >
-          إعداد سبأفون وبوابة SMS
+          التتبع التلقائي GPS والتوقفات
         </button>
         <button
           onClick={() => setActiveTab('offline')}
@@ -89,7 +72,7 @@ export const DocumentationGuides: React.FC = () => {
             activeTab === 'offline' ? 'bg-sky-700 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-50 border border-slate-200'
           }`}
         >
-          آلية العمل دون إنترنت (Offline-First)
+          العمل دون إنترنت والمزامنة + Android
         </button>
         <button
           onClick={() => setActiveTab('database')}
@@ -97,105 +80,52 @@ export const DocumentationGuides: React.FC = () => {
             activeTab === 'database' ? 'bg-sky-700 text-white shadow-xs' : 'bg-white text-slate-700 hover:bg-slate-50 border border-slate-200'
           }`}
         >
-          مخطط قاعدة البيانات (Schema)
+          بنية الجداول والبيانات
         </button>
       </div>
 
       {/* Tab 0: تعليمات ربط الهاتفين */}
       {activeTab === 'linking' && (
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-5 text-xs leading-relaxed text-slate-700">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-            <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-              <Link2 className="w-4 h-4 text-sky-700" />
-              <span>تعليمات ربط الهاتفين: تهيئة هاتف المدير وهاتف السائق للعمل مع نظام مياهنا الذكي</span>
+          <div className="flex items-center gap-2 pb-3 border-b border-slate-100">
+            <Link2 className="w-4 h-4 text-sky-700" />
+            <h3 className="font-bold text-slate-900 text-sm">
+              تعليمات ربط الهاتفين: تهيئة هاتف المدير وهاتف السائق للعمل مع نظام مياهنا الذكي
             </h3>
-            <button
-              type="button"
-              onClick={() => setManagerTab('driver_mgmt')}
-              className="px-3 py-1.5 bg-sky-50 hover:bg-sky-100 border border-sky-200 text-sky-800 rounded-lg font-bold text-[11px] flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
-            >
-              <Settings className="w-3.5 h-3.5" />
-              <span>تعديل الأرقام المربوطة حالياً</span>
-            </button>
-          </div>
-
-          {/* Live Linked Numbers Summary */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-slate-50 border border-slate-200 rounded-xl p-3.5">
-            <div className="flex items-center justify-between bg-white border border-slate-200 rounded-lg p-2.5">
-              <span className="text-slate-600 font-semibold">رقم شريحة هاتف السائق المعتمد:</span>
-              <span className="font-mono font-bold text-emerald-700 text-sm">{settings.driverSabafonNumber}</span>
-            </div>
-            <div className="flex items-center justify-between bg-white border border-slate-200 rounded-lg p-2.5">
-              <span className="text-slate-600 font-semibold">رقم هاتف المدير / مركز الاستقبال:</span>
-              <span className="font-mono font-bold text-sky-800 text-sm">{settings.sabafonCenterNumber}</span>
-            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="p-4 bg-sky-50 border border-sky-200 rounded-xl space-y-2.5">
               <div className="flex items-center gap-2 font-bold text-sky-900 text-sm">
                 <KeyRound className="w-4 h-4 text-sky-700" />
-                <span>الخطوة 1: تهيئة هاتف (أو جهاز) المدير العام</span>
+                <span>الخطوة 1: تهيئة جهاز / هاتف المدير العام</span>
               </div>
               <ol className="list-decimal list-inside space-y-1.5 text-slate-700">
-                <li>افتح رابط النظام في متصفح Chrome أو Safari على هاتف المدير ({settings.sabafonCenterNumber}) أو كمبيوتر المصنع.</li>
-                <li>في شاشة البداية اضغط على زر <strong>«المدير»</strong> وأدخل رمز المرور (الافتراضي: <code className="bg-white px-1.5 py-0.5 rounded border font-mono font-bold text-sky-800">20262027</code> — ويمكن تغييره في أي وقت).</li>
-                <li>سيحفظ المتصفح اختيارك تلقائياً لتفتح لوحة المدير مباشرة عند فتح الرابط مستقبلاً.</li>
-                <li>من قائمة المتصفح اختر <strong>«إضافة إلى الشاشة الرئيسية» (Add to Home Screen)</strong> لتثبيت لوحة الإدارة كأيقونة تطبيق على الجوال.</li>
-                <li>يمكنك تعديل أرقام الهواتف أو أسعار الديزل والمياه أو اعتماد الرحلات من لوحة المدير في أي وقت.</li>
+                <li>افتح رابط النظام في متصفح Chrome أو Safari على هاتف المدير أو كمبيوتر المصنع.</li>
+                <li>اختر <strong>«واجهة المدير العام»</strong> وأدخل رمز المرور السري المعتمد للمدير.</li>
+                <li>اضغط زر <strong>«تثبيت التطبيق»</strong> بأعلى الشاشة لإضافته إلى الشاشة الرئيسية كتطبيق مستقل (PWA).</li>
+                <li>تأكد من ضبط موقع المصنع الجغرافي من <strong>«إعدادات النظام»</strong> لضمان دقة رصد الانطلاق والعودة.</li>
               </ol>
             </div>
 
             <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2.5">
               <div className="flex items-center gap-2 font-bold text-emerald-900 text-sm">
                 <Smartphone className="w-4 h-4 text-emerald-700" />
-                <span>الخطوة 2: تهيئة هاتف السائق (Android)</span>
+                <span>الخطوة 2: تهيئة هاتف السائق (Android PWA)</span>
               </div>
               <ol className="list-decimal list-inside space-y-1.5 text-slate-700">
-                <li>تأكد من تركيب شريحة سبأفون الخاصة بالعمل ({settings.driverSabafonNumber}) في هاتف السائق مع توفر رصيد رسائل SMS.</li>
-                <li>وصّل هاتف السائق بشبكة واي فاي المصنع، وافتح نفس رابط النظام في متصفح Chrome.</li>
-                <li>في شاشة البداية اضغط على زر <strong>«السائق»</strong> (يفتح مباشرة بدون رمز مرور)، وسيحفظ الجهاز هذا الوضع تلقائياً.</li>
-                <li>أضف الصفحة إلى الشاشة الرئيسية لهاتف السائق واختر السماح بصلاحية الموقع (GPS) عند الطلب.</li>
-                <li>قبل انطلاق كل رحلة معتمدة، يفتح السائق التطبيق وهو متصل بالإنترنت لتحميل خط السير والعملاء محلياً على جهازه.</li>
+                <li>افتح نفس الرابط على هاتف السائق عبر Chrome، ثم اختر <strong>«تطبيق السائق»</strong>.</li>
+                <li>اضغط <strong>«تثبيت التطبيق»</strong> من الشريط العلوي لتخزين واجهة التطبيق محلياً على الجهاز.</li>
+                <li>اسمح للتطبيق بصلاحية <strong>الموقع الجغرافي (GPS الدقيق)</strong> عند بدء أول رحلة.</li>
+                <li>قبل انطلاق الوايت، يقوم السائق برفع الطلبات أو الزبائن الجدد للمدير، بينما يتولى المدير إعداد مخطط الرحلة وإرساله؛ وبعد استلام طلب الرحلة وموافقة السائق عليه، يعمل التتبع والحفظ بالكامل عبر GPS حتى عند انقطاع الإنترنت.</li>
               </ol>
             </div>
-          </div>
-
-          <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-3">
-            <div className="flex items-center gap-2 font-bold text-amber-900 text-sm">
-              <Radio className="w-4 h-4 text-amber-700" />
-              <span>الخطوة 3: ربط الإشعارات الميدانية عبر رسائل SMS سبأفون (دون إنترنت)</span>
-            </div>
-            <ul className="list-disc list-inside space-y-1.5 text-slate-700">
-              <li>
-                <strong>التحقق التلقائي من الأرقام:</strong> يتحقق الخادم من رقم مرسل الرسالة ومطابقته لرقم السائق المسجل في الإعدادات (ويمكن للمدير تعديل الرقمين في أي وقت من تبويب <strong>«السائق والوايت»</strong> أو <strong>«بوابة SMS»</strong> أو <strong>«إعدادات النظام»</strong>).
-              </li>
-              <li>
-                <strong>توجيه الرسائل من هاتف المصنع/المدير إلى النظام:</strong> في الهاتف المستقبل للرسائل داخل المصنع (المتصل بالإنترنت)، ثبّت تطبيق توجيه رسائل (مثل <em>SMS Forwarder</em> أو <em>SMS Gateway</em>) ووجّه الرسائل التي تحتوي على <code className="bg-white px-1 rounded border font-mono">WATER TRACK</code> عبر طلب <code className="bg-white px-1 rounded border font-mono">POST</code> إلى الرابط التالي:
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <code className="bg-white px-2.5 py-1.5 rounded-lg border border-amber-300 font-mono text-[11px] text-sky-900 select-all" dir="ltr">
-                    {gatewayEndpoint}
-                  </code>
-                  <button
-                    type="button"
-                    onClick={handleCopyEndpoint}
-                    className="px-2.5 py-1.5 bg-white hover:bg-amber-100 border border-amber-300 rounded-lg text-[11px] font-bold text-amber-900 flex items-center gap-1 cursor-pointer"
-                  >
-                    <Copy className="w-3 h-3" />
-                    <span>{copiedUrl ? 'تم النسخ ✓' : 'نسخ الرابط'}</span>
-                  </button>
-                </div>
-              </li>
-              <li>
-                <strong>تحديث الموقع والمزامنة:</strong> أثناء سير الوايت دون إنترنت، تصل رسائل الوصول والمغادرة والنبضات الدورية كل {settings.periodicHeartbeatMinutes} دقائق لتحديث موقع الصهريج على خريطة المدير. وعند عودة الوايت للمصنع يضغط السائق على <strong>«مزامنة الآن»</strong> لرفع كافة الفواتير والطلبات المسجلة محلياً.
-              </li>
-            </ul>
           </div>
 
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg flex items-center gap-2 text-slate-700">
             <Wifi className="w-4 h-4 text-sky-700 shrink-0" />
             <span>
-              <strong>تنبيه تشغيلي:</strong> كلا الهاتفين متصلان بنفس قاعدة البيانات السحابية المركزية؛ بمجرد اعتماد المدير لأي رحلة جديدة أو إضافة عميل، تظهر مباشرة على هاتف السائق بمجرد اتصال هاتفه بالإنترنت.
+              <strong>آلية التزامن المباشر:</strong> يعتمد النظام بالكامل على التتبع الجغرافي المحلي وقاعدة بيانات IndexedDB مع المزامنة التلقائية عبر HTTPS فور توفر الإنترنت (دون أي اعتماد على SMS).
             </span>
           </div>
         </div>
@@ -206,33 +136,24 @@ export const DocumentationGuides: React.FC = () => {
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4 text-xs leading-relaxed text-slate-700">
           <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
             <BookOpen className="w-4 h-4 text-sky-700" />
-            <span>1. دورة العمل اليومية للمدير العام</span>
+            <span>دورة الموافقة الإلزامية ومراجعة الرحلات للمدير العام</span>
           </h3>
-
           <div className="space-y-3">
             <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-              <strong className="text-slate-900 block mb-1">الخطوة 1: استقبال الطلبات ومنع التكرار</strong>
-              تصل الطلبات من المكالمات الهاتفية، واتساب، أو تسجيل السائق. يقوم النظام بالتحقق الآلي من رقم الهاتف والعميل خلال الـ 24 ساعة الماضية، وينبه في حال وجود طلب مكرر لنفس الخزان.
+              <strong className="text-slate-900 block mb-1">1. استلام طلبات الزبائن وإعداد مخططات الرحلات (مهام المدير)</strong>
+              يرفع السائق الطلبات والزبائن فقط، بينما يتولى المدير من تبويب <strong>«إدارة الرحلات»</strong> أو <strong>«محرك التجميع الذكي»</strong> إعداد مخطط الوجهات، ترتيب الزبائن، تحديد السائق المكلف، واعتماد الرحلة وإرسالها للسائق.
             </div>
-
             <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-              <strong className="text-slate-900 block mb-1">الخطوة 2: تشغيل خوارزمية التجميع الذكي</strong>
-              يقوم النظام بدراسة الطلبات في أحياء مأرب (حي الروضة، الشركة، المجمع، السلام...)، وحساب المسافة الفعلية، والتأكد من عدم تجاوز سعة الوايت البالغة 6,000 لتر، وحساب تكلفة الديزل والإنتاج وهامش الربح.
+              <strong className="text-slate-900 block mb-1">2. استجابة السائق والقرارات التشغيلية</strong>
+              تظهر الرحلة المعتمدة في تطبيق السائق ليقوم بالموافقة عليها وبدئها، أو الاعتذار عنها مع كتابة السبب ليظهر فوراً للمدير مع إمكانية تعديل المخطط أو إعادة تكليفه.
             </div>
-
             <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-              <strong className="text-slate-900 block mb-1">الخطوة 3: اعتماد الرحلة وتعبئة الصهريج</strong>
-              اعتماد الرحلة حصري للمدير. بمجرد الضغط على "اعتماد الرحلة"، يتم حجز كمية المياه وتحديث تطبيق هاتف السائق.
+              <strong className="text-slate-900 block mb-1">3. طلبات التعديل الطارئة بعد الاعتماد</strong>
+              لا يمكن للسائق تعديل خطة رحلة معتمدة مباشرة؛ وفي الحالات الطارئة يرسل طلب تعديل يتضمن السبب ليوافق عليه المدير أولاً.
             </div>
-
             <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-              <strong className="text-slate-900 block mb-1">الخطوة 4: متابعة مسار الوايت عبر SMS والخريطة</strong>
-              أثناء الرحلة، تصل رسائل الموقع الدورية ورسائل الوصول والمغادرة من هاتف السائق عبر شريحة سبأفون، وتظهر النقاط الحية على خريطة مأرب.
-            </div>
-
-            <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-              <strong className="text-slate-900 block mb-1">الخطوة 5: عودة الوايت وتسوية العهدة النقدية</strong>
-              عند عودة السائق للمصنع، يتم فتح شاشة "تسوية عهدة السائق"، ومطابقة إجمالي النقد المحصل مع المبالغ المسلمة فعلياً والمصروفات المخصومة (إن وجدت) لإنهاء الدورة المالية وبدء تعبئة الصهريج لرحلة جديدة.
+              <strong className="text-slate-900 block mb-1">4. المراجعة النهائية وإغلاق الرحلة</strong>
+              بعد عودة الوايت للمصنع واكتمال المزامنة، تتحول الرحلة لحالة <strong>«مكتملة بانتظار المراجعة»</strong> ليتحقق المدير من المسار الفعلي على الخريطة وتقرير التوقفات قبل إغلاقها نهائياً.
             </div>
           </div>
         </div>
@@ -243,90 +164,66 @@ export const DocumentationGuides: React.FC = () => {
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4 text-xs leading-relaxed text-slate-700">
           <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
             <Smartphone className="w-4 h-4 text-emerald-700" />
-            <span>2. دليل السائق الميداني (وايت مأرب)</span>
+            <span>دليل السائق الميداني (رفع الطلبات والزبائن والتتبع التلقائي)</span>
           </h3>
-
-          <div className="space-y-3">
-            <p>
-              تم تصميم تطبيق السائق ليعمل بالكامل دون إنترنت، وبأزرار لمسية كبيرة تناسب ضوء الشمس وأثناء القيادة:
-            </p>
-
-            <ul className="list-disc list-inside space-y-2 pr-2">
-              <li>
-                <strong>قبل الخروج من المصنع:</strong> التأكد من توصيل الهاتف بشبكة واي فاي المصنع ومزامنة الرحلة المعتمدة، والتأكد من وجود رصيد SMS في شريحة سبأفون.
-              </li>
-              <li>
-                <strong>عند بدء الرحلة:</strong> الضغط على زر "بدء رحلة التوزيع"، فيقوم التطبيق بإرسال رسالة حركة أولى وتفعيل نبضات التتبع.
-              </li>
-              <li>
-                <strong>عند الوصول لمنزل العميل:</strong> الضغط على زر "وصلت إلى العميل" لتسجيل وقت وإحداثيات الوصول وإرسال SMS.
-              </li>
-              <li>
-                <strong>أثناء التفريغ والتسليم:</strong> إدخال كمية اللترات المسلمة فعلياً والمبلغ النقدي المستلم من العميل، ثم الضغط على "تأكيد التسليم والفاتورة".
-              </li>
-              <li>
-                <strong>عند المغادرة:</strong> الضغط على "مغادرة العميل" للانتقال تلقائياً للعميل التالي في خط السير المحسوب.
-              </li>
-              <li>
-                <strong>استقبال طلب في الطريق:</strong> إذا طلب أحد الجيران أو العملاء تعبئة، يمكن للسائق الضغط على "تسجيل طلب جديد" وسيحفظ محلياً في هاتفه ويزامن فور العودة للمصنع.
-              </li>
-            </ul>
-          </div>
+          <ul className="list-disc list-inside space-y-2 pr-2">
+            <li><strong>رفع الطلبات والزبائن فقط:</strong> من تبويب «طلب / زبون» يمكنك رفع طلب توصيل لزبون مسجل، أو تسجيل زبون جديد مع طلب مياه، أو حفظ بيانات زبون جديد ليظهر فوراً لدى المدير ويُدرج في مخططات الرحلات (ولا يحق للسائق إنشاء أو تعديل مخططات الرحلات).</li>
+            <li><strong>استلام واعتماد طلبات الرحلات من المدير:</strong> فور قيام المدير بإعداد وإرسال رحلة إليك، تظهر في تبويب «الرحلات» للموافقة عليها أو الاعتذار عنها بكتابة السبب.</li>
+            <li><strong>بدء الرحلة والتتبع التلقائي:</strong> بعد الموافقة على الرحلة المعتمدة، اضغط «بدء الرحلة» ليبدأ النظام تلقائياً بتسجيل مسار GPS دون الحاجة لرسم طريق مسبق.</li>
+            <li><strong>تسجيل التسليمات:</strong> عند كل زبون، سجل الكمية المسلمة والمبلغ المحصل نقداً (التوقف وحده لا يُعد تسليماً).</li>
+            <li><strong>العودة للمصنع:</strong> عند دخول نطاق المصنع الجغرافي ({settings.plantGeofenceMeters}م)، يظهر تنبيه إنهاء الرحلة وتأكيد العودة لإغلاق التسجيل.</li>
+          </ul>
         </div>
       )}
 
-      {/* Tab 3: Sabafon SMS Gateway */}
-      {activeTab === 'sms' && (
+      {/* Tab 3: GPS & Stop Detection */}
+      {activeTab === 'gps' && (
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4 text-xs leading-relaxed text-slate-700">
           <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-            <Radio className="w-4 h-4 text-amber-600" />
-            <span>3. تعليمات إعداد شريحة سبأفون وبوابة استقبال SMS في المصنع</span>
+            <Navigation className="w-4 h-4 text-sky-700" />
+            <span>آلية التتبع التلقائي عبر GPS واكتشاف التوقفات</span>
           </h3>
-
-          <div className="space-y-3">
-            <p>
-              نظراً لأن تغطية الإنترنت غير مستقرة أثناء رحلات التوزيع في مأرب بينما تغطية شبكة سبأفون للمكالمات والرسائل متوفرة، يعتمد النظام على بروتوكول SMS خفيف الوزن وعالي الاعتمادية:
-            </p>
-
-            <div className="bg-slate-900 text-emerald-400 font-mono p-3 rounded-lg text-xs" style={{ direction: 'ltr', textAlign: 'left' }}>
-              WATER TRACK<br />
-              TRIP: 2026-0002<br />
-              EVENT: ARRIVAL<br />
-              CUSTOMER: CUST-0001<br />
-              LAT: 15.4712<br />
-              LON: 45.3340<br />
-              TIME: 10:45<br />
-              SEQ: 0004
-            </div>
-
-            <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-              <strong className="text-slate-900 block mb-1">عتاد الاستقبال في المصنع:</strong>
-              1. هاتف Android مخصص مثبت بمكتب إدارة المصنع، أو مودم GSM 4G يدعم شرائح سبأفون.<br />
-              2. تفعيل تطبيق Gateway بسيط (مثل SMS Gateway API أو برنامج مياهنا المدمج) لتوجيه الرسائل الواردة فوراً إلى الرابط:
-              <code className="bg-white px-1.5 py-0.5 rounded border text-sky-700 font-bold mr-1">/api/sms/receive</code>.<br />
-              3. يقوم الخادم المركزي بالتحقق من رقم المرسل، وتصفية أي رسائل مكررة بناءً على الرقم التسلسلي، وتحديث موقع الوايت فوراً.
-            </div>
-          </div>
+          <ul className="list-disc list-inside space-y-2 pr-2">
+            <li><strong>تسجيل النقاط المتتابع:</strong> يسجل كل نقطة إحداثيات مع الوقت والسرعة والمسافة التراكمية بفاصل {settings.gpsSampleIntervalSeconds} ثوانٍ، وتُمنع تعديلاتها من السائق لحماية الموثوقية.</li>
+            <li><strong>التمييز بين التوقف الفعلي والمروري:</strong> يُسجل التوقف الفعلي فقط عندما تقل السرعة عن <strong>{settings.minMovementSpeedKmH} كم/ساعة</strong> لمدة تتجاوز <strong>{settings.stopDetectionMinutes} دقائق</strong>؛ أما الإشارات والازدحام المؤقت فيتم تجاهلها.</li>
+            <li><strong>الربط المحايد بمواقع الزبائن:</strong> تُربط التوقفات الطويلة بالزبائن المعتمدين ضمن نطاق <strong>{settings.stopRadiusMeters} متر</strong>، مع عرض واضح لأي توقف خارج مواقع الزبائن دون إصدار أحكام آلية.</li>
+            <li><strong>فجوات الإشارة وضعف الدقة:</strong> إذا تجاوزت الدقة {settings.gpsWeakAccuracyMeters}م أو انقطعت الإشارة لأكثر من {settings.gpsGapSeconds} ثانية يتم توثيق الفجوة للمدير.</li>
+          </ul>
         </div>
       )}
 
-      {/* Tab 4: Offline-First */}
+      {/* Tab 4: Offline-First + Native Android Foreground Service */}
       {activeTab === 'offline' && (
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4 text-xs leading-relaxed text-slate-700">
           <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-sky-700" />
-            <span>4. معمارية العمل دون إنترنت (Offline-First Architecture)</span>
+            <span>العمل دون إنترنت (IndexedDB) + متطلبات التشغيل في الخلفية على Android</span>
           </h3>
-
           <div className="space-y-2">
             <p>
-              تعتمد قاعدة بيانات تطبيق السائق على تخزين محلي مستقل (SQLite / LocalStorage) يضمن استمرارية العمل دون انقطاع:
+              يستخدم التطبيق قاعدة بيانات محلية دائمة <strong>IndexedDB</strong> تحفظ الرحلات ونقاط GPS والتوقفات والطلبات والتسليمات عند انقطاع الإنترنت أو إغلاق التطبيق أو إعادة تشغيل الهاتف، ولا تُحذف أي بيانات محلية إلا بعد وصول تأكيد صريح (ACK) من الخادم.
             </p>
-            <ul className="list-disc list-inside space-y-1.5 pr-2">
-              <li>تحميل بيانات الرحلة المعتمدة، أسماء العملاء، أرقامهم، وسعات خزاناتهم محلياً على هاتف السائق.</li>
-              <li>تسجيل كافة عمليات التفريغ والمبالغ المسددة في طابور العمليات المعلقة محلياً.</li>
-              <li>الاحتفاظ بسجل GPS الكامل حتى في حال تعذر إرسال SMS مؤقتاً بسبب انعدام التغطية.</li>
-              <li>عند عودة الوايت إلى نطاق شبكة المصنع، تتم المزامنة التلقائية الكاملة وتصفير الطابور دون أي تدخل يدوي.</li>
+            <p>
+              عند عودة الإنترنت، يكتشف التطبيق الاتصال تلقائياً ويرسل البيانات بالتتابع الزمني وبشكل لا يقبل التكرار (Idempotent).
+            </p>
+          </div>
+
+          <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
+            <div className="font-bold text-amber-900 flex items-center gap-2">
+              <Cpu className="w-4 h-4 text-amber-700" />
+              <span>توضيح تقني صريح: التتبع في المتصفح مقابل خدمة الخلفية الأصلية على Android (Foreground Service)</span>
+            </div>
+            <ul className="list-disc list-inside space-y-1.5 text-slate-700">
+              <li><strong>في متصفح الويب / PWA:</strong> يستمر GPS عبر <code className="bg-white px-1 rounded border font-mono">navigator.geolocation.watchPosition</code> مع تفعيل <em>WakeLock</em> لإبقاء الشاشة نشطة أثناء القيادة، لكن قيود نظام Android/iOS قد توقف تتبع المتصفح إذا أُغلقت الشاشة أو وُضع المتصفح في الخلفية لوقت طويل.</li>
+              <li><strong>للتشغيل المستمر في الخلفية الكاملة (APK / Capacitor / Native Wrapper):</strong> يوفر النظام واجهة الجسر <code className="bg-white px-1 rounded border font-mono" dir="ltr">window.MiyahnaAndroidLocation</code> لربط خدمة أمامية أصلية <em>Android Foreground Service</em> بالإعدادات والصلاحيات التالية في <code className="bg-white px-1 rounded border font-mono" dir="ltr">AndroidManifest.xml</code>:
+                <ul className="list-circle list-inside pr-4 mt-1 font-mono text-[11px]" dir="ltr">
+                  <li>ACCESS_FINE_LOCATION & ACCESS_COARSE_LOCATION</li>
+                  <li>ACCESS_BACKGROUND_LOCATION (Android 10+)</li>
+                  <li>FOREGROUND_SERVICE & FOREGROUND_SERVICE_LOCATION (Android 14+)</li>
+                  <li>POST_NOTIFICATIONS + persistent Foreground Notification during active trips</li>
+                  <li>Battery Optimization Exemption (ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)</li>
+                </ul>
+              </li>
             </ul>
           </div>
         </div>
@@ -337,30 +234,25 @@ export const DocumentationGuides: React.FC = () => {
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4 text-xs leading-relaxed text-slate-700">
           <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
             <Database className="w-4 h-4 text-slate-700" />
-            <span>5. الجداول الـ 20 المعتمدة في قاعدة البيانات (PostgreSQL / SQLite)</span>
+            <span>جداول وكيانات النظام المعتمدة (بعد إزالة SMS نهائياً)</span>
           </h3>
-
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono">
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">1. Users</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">2. Roles</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">3. Customers</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">4. Customer_Tanks</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">5. Orders</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">6. Trucks</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">7. Drivers</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">8. Trips</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">9. Trip_Load_Cycles</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">10. Trip_Customers</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">11. Deliveries</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">12. Invoices</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">13. Payments</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">14. Expenses</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">15. Fuel_Records</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">16. GPS_Events</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">17. SMS_Messages</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">18. Sync_Queue</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">19. Audit_Logs</div>
-            <div className="p-2 bg-slate-50 border rounded font-semibold text-slate-800">20. System_Settings</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">1. Customers</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">2. Orders</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">3. Trucks & Driver</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">4. Trips (10 States)</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">5. Trip_Customer_Stops</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">6. Trip_GPS_Points</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">7. Detected_Stops</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">8. GPS_Gaps</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">9. Modification_Requests</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">10. Trip_Audit_Logs</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">11. Invoices</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">12. Driver_Reconciliations</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">13. Expenses</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">14. IndexedDB_Offline_Queue</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">15. Plant_Geofence</div>
+            <div className="p-2 bg-slate-50 border rounded font-semibold">16. System_Settings</div>
           </div>
         </div>
       )}

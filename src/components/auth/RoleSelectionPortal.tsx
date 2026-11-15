@@ -46,7 +46,7 @@ export const RoleSelectionPortal: React.FC<RoleSelectionPortalProps> = ({
 
         <div className="flex items-center gap-2 text-[11px] text-slate-400 bg-slate-800/60 px-3 py-1 rounded-full border border-slate-700/60">
           <MapPin className="w-3.5 h-3.5 text-sky-400" />
-          <span>مديرية مأرب · سبأفون</span>
+          <span>مديرية مأرب · تتبع GPS والعمل دون إنترنت</span>
         </div>
       </div>
 
@@ -87,7 +87,7 @@ export const RoleSelectionPortal: React.FC<RoleSelectionPortalProps> = ({
                 واجهة المدير العام
               </h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                لوحة التحكم المركزية للكمبيوتر والجوال: تجميع الطلبات الذكي، متابعة الوايت عبر GPS، اعتماد الرحلات، الفواتير، والأرباح.
+                لوحة التحكم المركزية للكمبيوتر والجوال: اعتماد مخططات الرحلات، متابعة مسار الوايت والتوقفات عبر GPS، الفواتير، والأرباح.
               </p>
             </div>
 
@@ -107,8 +107,8 @@ export const RoleSelectionPortal: React.FC<RoleSelectionPortalProps> = ({
                 <Truck className="w-7 h-7" />
               </div>
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900/80 text-[11px] font-semibold text-emerald-300 border border-slate-700">
-                <Smartphone className="w-3 h-3" />
-                <span>وضع الجوال الميداني</span>
+                <Lock className="w-3 h-3 text-emerald-400" />
+                <span>حساب سائق معتمد</span>
               </div>
             </div>
 
@@ -117,13 +117,13 @@ export const RoleSelectionPortal: React.FC<RoleSelectionPortalProps> = ({
                 تطبيق السائق (Android)
               </h3>
               <p className="text-xs text-slate-400 leading-relaxed">
-                واجهة مخصصة لشاشة الجوال وأزرار لمسية كبيرة: تعمل بالكامل دون إنترنت، تسجيل التفريغ والتحصيل، وإرسال SMS سبأفون.
+                واجهة جوال دائمة بكلمة مرور وحساب معتمد من المدير: مخطط الوجهات، التتبع التلقائي GPS، والعمل دون إنترنت.
               </p>
             </div>
 
             <div className="w-full py-3 bg-emerald-700 group-hover:bg-emerald-600 text-white rounded-xl text-xs font-bold text-center transition-colors flex items-center justify-center gap-2 shadow-md">
               <Truck className="w-3.5 h-3.5" />
-              <span>دخول تطبيق السائق المباشر</span>
+              <span>تسجيل دخول / طلب حساب سائق</span>
             </div>
           </button>
         </div>
@@ -136,7 +136,7 @@ export const RoleSelectionPortal: React.FC<RoleSelectionPortalProps> = ({
       {/* Footer */}
       <div className="max-w-4xl mx-auto w-full py-3 text-center text-[11px] text-slate-500 border-t border-slate-800/80 flex flex-col sm:flex-row items-center justify-between gap-2">
         <span>مصنع مياهنا المركزي لتحلية وتعبئة المياه · مأرب</span>
-        <span className="font-mono text-slate-400">رمز الدخول الافتراضي للمدير: 20262027</span>
+        <span className="text-slate-400">نظام التشغيل الميداني المعتمد</span>
       </div>
     </div>
   );

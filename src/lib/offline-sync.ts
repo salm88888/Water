@@ -1,12 +1,10 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
- * Miyahna - Offline-First Sync & Queue Engine for Driver Android PWA
- * Operates autonomously in Marib without active internet, storing events in local storage
- * and reconciling when back at the water plant.
+ * Miyahna - Offline-First Sync & Queue Types (No SMS)
  */
 
-import { Trip, TripCustomerStop, Order, GPSEvent, SMSMessage } from '../types';
+import { Trip, TripGPSPoint } from '../types';
 
 export interface PendingDeliverySync {
   id: string;
@@ -26,17 +24,36 @@ export interface PendingDeliverySync {
 
 export interface PendingOfflineOrder {
   id: string;
+  customerId?: string;
   customerName: string;
   phone: string;
   district: string;
   addressDetails: string;
+  lat?: number;
+  lng?: number;
   tankCapacity: number;
   requestedLiters: number;
   pricePerLiter: number;
   totalAmount: number;
   source: 'driver_manual';
+  isUrgent?: boolean;
   notes?: string;
   createdAt: string;
+  actorName?: string;
+}
+
+export interface PendingOfflineCustomer {
+  id: string;
+  name: string;
+  phone: string;
+  district: string;
+  addressDetails: string;
+  lat?: number;
+  lng?: number;
+  tankCapacityLiters: number;
+  notes?: string;
+  createdAt: string;
+  actorName?: string;
 }
 
 export interface OfflineState {
@@ -45,19 +62,30 @@ export interface OfflineState {
   activeTrip: Trip | null;
   pendingDeliveries: PendingDeliverySync[];
   pendingOrders: PendingOfflineOrder[];
-  pendingGpsEvents: GPSEvent[];
-  outboxSms: SMSMessage[];
-  lastKnownGps: { lat: number; lng: number; speed: number; timestamp: string } | null;
+  pendingCustomers: PendingOfflineCustomer[];
+  pendingGpsPoints: TripGPSPoint[];
+  lastKnownGps: { lat: number; lng: number; speed: number; accuracy?: number; timestamp: string } | null;
   sequenceCounter: number;
 }
 
-const STORAGE_KEY = 'miyahna_driver_offline_store_v1';
+const STORAGE_KEY = 'miyahna_driver_offline_store_v2';
 
 export function loadOfflineState(): OfflineState {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
     if (raw) {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      return {
+        isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+        lastSyncTimestamp: parsed.lastSyncTimestamp || null,
+        activeTrip: parsed.activeTrip || null,
+        pendingDeliveries: Array.isArray(parsed.pendingDeliveries) ? parsed.pendingDeliveries : [],
+        pendingOrders: Array.isArray(parsed.pendingOrders) ? parsed.pendingOrders : [],
+        pendingCustomers: Array.isArray(parsed.pendingCustomers) ? parsed.pendingCustomers : [],
+        pendingGpsPoints: Array.isArray(parsed.pendingGpsPoints) ? parsed.pendingGpsPoints : [],
+        lastKnownGps: parsed.lastKnownGps || null,
+        sequenceCounter: typeof parsed.sequenceCounter === 'number' ? parsed.sequenceCounter : 1,
+      };
     }
   } catch (e) {
     console.error('Failed to parse offline state from localStorage', e);
@@ -69,19 +97,43 @@ export function loadOfflineState(): OfflineState {
     activeTrip: null,
     pendingDeliveries: [],
     pendingOrders: [],
-    pendingGpsEvents: [],
-    outboxSms: [],
+    pendingCustomers: [],
+    pendingGpsPoints: [],
     lastKnownGps: null,
-    sequenceCounter: 5,
+    sequenceCounter: 1,
   };
 }
 
 export function saveOfflineState(state: OfflineState): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
   } catch (e) {
     console.error('Failed to save offline state to localStorage', e);
   }
+}
+
+export function resetOfflineState(): OfflineState {
+  const empty: OfflineState = {
+    isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+    lastSyncTimestamp: null,
+    activeTrip: null,
+    pendingDeliveries: [],
+    pendingOrders: [],
+    pendingCustomers: [],
+    pendingGpsPoints: [],
+    lastKnownGps: null,
+    sequenceCounter: 1,
+  };
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+  } catch (e) {
+    console.error('Failed to clear offline state from localStorage', e);
+  }
+  return empty;
 }
 
 export function queueDeliveryAction(
@@ -90,7 +142,6 @@ export function queueDeliveryAction(
 ): OfflineState {
   const updatedDeliveries = [...state.pendingDeliveries.filter((d) => d.orderId !== delivery.orderId), delivery];
 
-  // Also update local activeTrip customer stop immediately so driver sees real-time progress
   let updatedTrip = state.activeTrip;
   if (updatedTrip) {
     const stops = updatedTrip.customerStops.map((stop) => {
@@ -140,21 +191,34 @@ export function queueOfflineOrder(
   return newState;
 }
 
-export function queueGpsAndSms(
+export function queueOfflineCustomer(
   state: OfflineState,
-  gps: GPSEvent,
-  sms: SMSMessage
+  customer: PendingOfflineCustomer
 ): OfflineState {
   const newState: OfflineState = {
     ...state,
+    pendingCustomers: [...(state.pendingCustomers || []), customer],
+  };
+  saveOfflineState(newState);
+  return newState;
+}
+
+export function queueGpsPoint(
+  state: OfflineState,
+  point: TripGPSPoint
+): OfflineState {
+  const exists = state.pendingGpsPoints.some((p) => p.id === point.id);
+  const nextPoints = exists ? state.pendingGpsPoints : [...state.pendingGpsPoints, point];
+  const newState: OfflineState = {
+    ...state,
     sequenceCounter: state.sequenceCounter + 1,
-    pendingGpsEvents: [...state.pendingGpsEvents, gps],
-    outboxSms: [...state.outboxSms, sms],
+    pendingGpsPoints: nextPoints,
     lastKnownGps: {
-      lat: gps.lat,
-      lng: gps.lng,
-      speed: gps.speed || 0,
-      timestamp: gps.timestamp,
+      lat: point.lat,
+      lng: point.lng,
+      speed: point.speedKmH || 0,
+      accuracy: point.accuracy,
+      timestamp: point.timestamp,
     },
   };
   saveOfflineState(newState);

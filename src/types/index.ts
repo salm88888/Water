@@ -20,21 +20,41 @@ export type OrderStatus =
 export type OrderSource =
   | 'phone'
   | 'whatsapp'
-  | 'sms'
   | 'manager_manual'
   | 'driver_manual'
   | 'customer_app';
 
+/**
+ * Exact 10 Trip Lifecycle States required by workflow:
+ * 1. draft
+ * 2. pending_approval
+ * 3. rejected
+ * 4. approved
+ * 5. in_progress
+ * 6. returned_to_plant
+ * 7. pending_sync
+ * 8. synced
+ * 9. completed_pending_review
+ * 10. closed
+ */
 export type TripStatus =
-  | 'proposed'
+  | 'draft'
+  | 'pending_approval'
+  | 'rejected'
   | 'approved'
-  | 'loading'
-  | 'started'
   | 'in_progress'
-  | 'returning'
-  | 'completed'
-  | 'reconciled'
-  | 'cancelled';
+  | 'returned_to_plant'
+  | 'pending_sync'
+  | 'synced'
+  | 'completed_pending_review'
+  | 'closed';
+
+export type TripSyncStatus =
+  | 'local_only'
+  | 'pending_sync'
+  | 'syncing'
+  | 'synced'
+  | 'sync_error';
 
 export type StopStatus =
   | 'pending'
@@ -49,7 +69,6 @@ export type GPSEventType =
   | 'STOPPED'
   | 'ARRIVAL'
   | 'DEPARTURE'
-  | 'HEARTBEAT_10M'
   | 'RETURN_PLANT'
   | 'END';
 
@@ -59,7 +78,7 @@ export interface Customer {
   name: string;
   phone: string;
   altPhone?: string;
-  district: string; // المنطقة / الحي في مأرب
+  district: string;
   addressDetails: string;
   lat: number;
   lng: number;
@@ -70,6 +89,7 @@ export interface Customer {
   isActive: boolean;
   totalOrdersCount: number;
   totalLitersDelivered: number;
+  isOfflineCreated?: boolean;
 }
 
 export interface Order {
@@ -126,6 +146,73 @@ export interface TripCustomerStop {
   invoiceId?: string;
 }
 
+export interface TripGPSPoint {
+  id: string; // Unique deterministic ID to guarantee idempotent sync & prevent duplicates
+  tripId: string;
+  lat: number;
+  lng: number;
+  accuracy?: number; // meters
+  speedKmH: number;
+  timestamp: string;
+  seq: number;
+  distanceFromPrevKm: number;
+  isWeakSignal?: boolean;
+  source: 'gps_watch' | 'gps_android_fg' | 'gps_manual';
+}
+
+export interface DetectedStop {
+  id: string; // Deterministic ID (e.g., stop-<firstPointId>)
+  tripId: string;
+  lat: number;
+  lng: number;
+  startTime: string;
+  endTime?: string;
+  durationMinutes: number;
+  isActive: boolean;
+  isProlongedStop: boolean; // >= stopDetectionMinutes threshold
+  nearCustomerId?: string;
+  nearCustomerName?: string;
+  distanceToCustomerMeters?: number;
+  isUnplannedStop: boolean; // True when prolonged stop is far from any planned customer stop
+  notes?: string;
+}
+
+export interface GPSGap {
+  id: string;
+  tripId: string;
+  startTime: string;
+  endTime: string;
+  durationSeconds: number;
+  reason: 'weak_signal' | 'connection_loss' | 'gps_paused';
+  fromLat?: number;
+  fromLng?: number;
+  toLat?: number;
+  toLng?: number;
+}
+
+export interface TripAuditEntry {
+  id: string;
+  timestamp: string;
+  actorRole: 'driver' | 'manager' | 'system';
+  actorName: string;
+  action: string;
+  details?: string;
+}
+
+export interface ModificationRequest {
+  id: string;
+  requestedAt: string;
+  requestedBy: string;
+  reason: string;
+  proposedStops: TripCustomerStop[];
+  proposedOrderIds: string[];
+  proposedTotalLiters: number;
+  status: 'pending' | 'approved' | 'rejected';
+  reviewedBy?: string;
+  reviewedAt?: string;
+  reviewNotes?: string;
+}
+
 export interface Trip {
   id: string;
   tripNumber: string; // e.g. TRIP-2026-0001
@@ -134,18 +221,49 @@ export interface Trip {
   driverId: string;
   driverName: string;
   truckPlate: string;
-  initialLoadLiters: number; // max 6,000L
+  initialLoadLiters: number; // max truck capacity (6,000L)
   deliveredLiters: number;
   remainingLiters: number;
   status: TripStatus;
+  syncStatus: TripSyncStatus;
+  createdByRole: 'driver' | 'manager';
+  driverAcceptanceStatus?: 'pending' | 'accepted' | 'declined';
+  driverRespondedAt?: string;
+  driverResponseReason?: string;
   customerStops: TripCustomerStop[];
   orderIds: string[];
   proposedAt: string;
+  submittedAt?: string;
   approvedAt?: string;
+  approvedBy?: string;
+  rejectedAt?: string;
+  rejectedBy?: string;
+  rejectionReason?: string;
+  returnedForEditReason?: string;
   startedAt?: string;
+  startLocation?: { lat: number; lng: number };
+  returnedToPlantAt?: string;
+  returnLocation?: {
+    lat: number;
+    lng: number;
+    distanceFromPlantMeters: number;
+    detectedAutomatically: boolean;
+  };
   completedAt?: string;
+  closedAt?: string;
+  closedBy?: string;
   reconciledAt?: string;
-  
+  lastSyncedAt?: string;
+
+  // GPS Telemetry & Stop Detection
+  gpsPoints?: TripGPSPoint[];
+  detectedStops?: DetectedStop[];
+  gpsGaps?: GPSGap[];
+  movingMinutes?: number;
+  stoppedMinutes?: number;
+  auditLogs?: TripAuditEntry[];
+  modificationRequests?: ModificationRequest[];
+
   // Logistics & Economics
   estimatedDistanceKm: number;
   actualDistanceKm?: number;
@@ -163,8 +281,8 @@ export interface Trip {
   expectedProfit: number;
   actualProfit?: number;
   profitMarginPercent: number;
-  capacityUtilizationPercent: number; // e.g. (totalLiters / 6000) * 100
-  
+  capacityUtilizationPercent: number;
+
   departureRecommendation: 'GO_NOW' | 'WAIT_MORE' | 'FEASIBLE_PARTIAL' | 'URGENT_OVERRIDE';
   recommendationReason: string;
   notes?: string;
@@ -205,8 +323,8 @@ export interface DriverReconciliation {
   totalInvoicedAmount: number;
   totalCashCollected: number;
   actualCashHandedOver: number;
-  authorizedExpensesDeducted: number; // e.g. emergency diesel or tips
-  differenceAmount: number; // actualHandedOver + expenses - totalCashCollected
+  authorizedExpensesDeducted: number;
+  differenceAmount: number;
   status: 'pending' | 'approved_reconciled' | 'discrepancy';
   notes?: string;
   approvedBy?: string;
@@ -227,7 +345,7 @@ export interface Expense {
     | 'other';
   description: string;
   amount: number;
-  liters?: number; // for diesel
+  liters?: number;
   tripId?: string;
   tripNumber?: string;
   receiptNumber?: string;
@@ -243,31 +361,12 @@ export interface GPSEvent {
   lat: number;
   lng: number;
   speed?: number;
+  accuracy?: number;
   customerId?: string;
   customerName?: string;
-  source: 'sms' | 'app_local' | 'manual_gateway';
-  rawSmsText?: string;
+  source: 'app_local' | 'gps_auto';
   sequenceNumber: number;
   isProcessed: boolean;
-}
-
-export interface SMSMessage {
-  id: string;
-  messageId: string;
-  senderNumber: string;
-  tripId: string;
-  tripNumber: string;
-  sequenceNumber: number;
-  eventType: GPSEventType;
-  lat: number;
-  lng: number;
-  speed?: number;
-  timeString: string;
-  customerId?: string;
-  rawText: string;
-  receivedAt: string;
-  status: 'processed' | 'duplicate_rejected' | 'invalid_format' | 'delayed_archived';
-  statusReason?: string;
 }
 
 export interface Truck {
@@ -279,6 +378,7 @@ export interface Truck {
   currentWaterLiters: number;
   driverId: string;
   driverName: string;
+  driverPhone?: string;
   status: 'idle' | 'loading' | 'on_trip' | 'maintenance';
   lastLat: number;
   lastLng: number;
@@ -290,25 +390,62 @@ export interface Truck {
 }
 
 export interface SystemSettings {
-  waterProductionCostPerLiter: number; // e.g. 4 YER / Liter
-  defaultSellingPricePerLiter: number; // e.g. 15 YER / Liter
-  dieselPricePerLiter: number; // e.g. 700 YER / Liter
-  truckDieselConsumptionPerKm: number; // e.g. 0.35 Liter per km
-  maintenanceAllowancePerTrip: number; // e.g. 2000 YER
-  driverWagePerTrip: number; // e.g. 4000 YER
-  stopDetectionMinutes: number; // 3 minutes
-  minMovementSpeedKmH: number; // 10 km/h
-  periodicHeartbeatMinutes: number; // 10 minutes
+  waterProductionCostPerLiter: number;
+  defaultSellingPricePerLiter: number;
+  dieselPricePerLiter: number;
+  truckDieselConsumptionPerKm: number;
+  maintenanceAllowancePerTrip: number;
+  driverWagePerTrip: number;
+
+  // GPS & Stop Detection Rules (Manager Configurable)
+  stopDetectionMinutes: number; // e.g., 3 minutes stationary -> prolonged stop
+  minMovementSpeedKmH: number; // e.g., 8 km/h -> below this considered stationary
+  stopRadiusMeters: number; // e.g., 80m -> radius around customer coordinates to link stop
+  plantGeofenceMeters: number; // e.g., 120m -> radius around plant to detect return
+  gpsSampleIntervalSeconds: number; // e.g., 10s sampling interval
+  gpsWeakAccuracyMeters: number; // e.g., 60m -> mark point as weak signal
+  gpsGapSeconds: number; // e.g., 120s -> gap duration alert
+
   plantLocation: {
     name: string;
     city: string;
     lat: number;
     lng: number;
   };
-  sabafonCenterNumber: string;
-  driverSabafonNumber: string;
   demoDataActive: boolean;
+  demoDataClearedAt?: string;
+  demoResetVersion?: number;
   managerPin?: string;
+}
+
+export type DriverAccountStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
+
+export interface DriverAccount {
+  id: string;
+  name: string;
+  username: string;
+  phone: string;
+  password: string;
+  licenseNumber?: string;
+  status: DriverAccountStatus;
+  createdAt: string;
+  createdBy: 'manager' | 'driver_self';
+  approvedAt?: string;
+  approvedBy?: string;
+  rejectedAt?: string;
+  rejectionReason?: string;
+  lastLoginAt?: string;
+  isDemo?: boolean;
+}
+
+export interface DriverSession {
+  id: string;
+  name: string;
+  username: string;
+  phone: string;
+  licenseNumber?: string;
+  loggedInAt: string;
+  isDemo?: boolean;
 }
 
 export interface ClusterProposal {
@@ -331,3 +468,75 @@ export interface ClusterProposal {
   reason: string;
   districtsCovered: string[];
 }
+
+export type NotificationPriority = 'urgent' | 'action_required' | 'info';
+
+export type NotificationCategory =
+  | 'trip_submitted'
+  | 'trip_approved'
+  | 'trip_rejected'
+  | 'trip_returned'
+  | 'trip_driver_accepted'
+  | 'trip_driver_declined'
+  | 'trip_started'
+  | 'trip_returned_plant'
+  | 'trip_closed'
+  | 'mod_requested'
+  | 'mod_approved'
+  | 'mod_rejected'
+  | 'delivery_logged'
+  | 'order_added'
+  | 'customer_added'
+  | 'gps_alert'
+  | 'sync_completed'
+  | 'driver_account_requested'
+  | 'driver_account_approved'
+  | 'driver_account_rejected'
+  | 'directive';
+
+export interface AppNotification {
+  id: string;
+  createdAt: string;
+  targetRole: 'manager' | 'driver';
+  actorRole: 'manager' | 'driver' | 'system';
+  actorName: string;
+  category: NotificationCategory;
+  priority: NotificationPriority;
+  title: string;
+  message: string;
+  tripId?: string;
+  tripNumber?: string;
+  orderId?: string;
+  directiveId?: string;
+  isRead: boolean;
+  actionTab?: string;
+}
+
+export type DirectiveStatus = 'sent' | 'acknowledged' | 'completed';
+
+export interface ManagerDirective {
+  id: string;
+  createdAt: string;
+  createdBy: string;
+  title: string;
+  message: string;
+  priority: 'normal' | 'urgent';
+  tripId?: string;
+  tripNumber?: string;
+  customerId?: string;
+  customerName?: string;
+  status: DirectiveStatus;
+  acknowledgedAt?: string;
+  completedAt?: string;
+  driverReply?: string;
+}
+
+export interface RealtimePresence {
+  managerConnected: boolean;
+  managerCount: number;
+  driverConnected: boolean;
+  driverCount: number;
+  driverLastSeenAt?: string;
+  managerLastSeenAt?: string;
+}
+

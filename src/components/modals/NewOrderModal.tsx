@@ -173,7 +173,7 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
               />
             </div>
             <div>
-              <label className="block text-slate-700 font-semibold mb-1">هاتف العميل (سبأفون) *</label>
+              <label className="block text-slate-700 font-semibold mb-1">هاتف العميل *</label>
               <input
                 type="text"
                 required
@@ -203,7 +203,6 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
               >
                 <option value="phone">اتصال هاتفي</option>
                 <option value="whatsapp">واتساب</option>
-                <option value="sms">رسالة SMS</option>
                 <option value="manager_manual">إدخال يدوي من المدير</option>
                 <option value="driver_manual">إدخال السائق</option>
               </select>

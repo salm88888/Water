@@ -98,7 +98,7 @@ export const ManagerPinModal: React.FC<ManagerPinModalProps> = ({
         <div className="space-y-1">
           <h3 className="font-bold text-base text-slate-100">أدخل رمز مرور المدير</h3>
           <p className="text-xs text-slate-400">
-            الرمز الافتراضي: <span className="font-mono text-sky-400 font-bold tracking-wider">20262027</span>
+            مطلوب إدخال الرمز السري المعتمد للمدير العام للمتابعة
           </p>
         </div>
 

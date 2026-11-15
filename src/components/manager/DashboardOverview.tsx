@@ -19,11 +19,8 @@ import {
   Smartphone,
   AlertCircle,
   Receipt,
-  Radio,
-  Trash2,
-  Sparkles,
+  Navigation,
   BookOpen,
-  AlertTriangle,
   X,
   PlayCircle,
 } from 'lucide-react';
@@ -41,12 +38,9 @@ export const DashboardOverview: React.FC = () => {
     clusterProposals,
     setManagerTab,
     setViewMode,
-    clearDemoData,
   } = useApp();
 
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showGuideModal, setShowGuideModal] = useState(false);
-  const [isClearing, setIsClearing] = useState(false);
 
   // Metrics
   const newOrders = orders.filter((o) => o.status === 'new').length;
@@ -79,78 +73,41 @@ export const DashboardOverview: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Production Readiness & Demo Status Banner */}
-      {settings.demoDataActive !== false ? (
-        <div className="bg-gradient-to-r from-amber-500/10 via-amber-50 to-orange-50 border border-amber-200 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
-          <div className="flex items-start sm:items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-xs">
-              <Sparkles className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-bold text-slate-900 text-sm">وضع البيانات التجريبية نشط</span>
-                <span className="text-[10px] bg-amber-200 text-amber-900 font-bold px-2 py-0.5 rounded-full">
-                  15 عميلاً تجريبياً في مأرب
-                </span>
-              </div>
-              <p className="text-xs text-slate-600 mt-0.5">
-                النظام محمل ببيانات تجريبية استرشادية لمأرب. يمكنك مسح البيانات بضغطة واحدة وبدء التشغيل الفعلي للمصنع فوراً.
-              </p>
-            </div>
+      {/* Production Operational Header Banner */}
+      <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-sky-50 border border-emerald-200 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+            <CheckCircle className="w-5 h-5" />
           </div>
-          <div className="flex items-center gap-2 w-full sm:w-auto shrink-0">
-            <button
-              onClick={() => setShowGuideModal(true)}
-              className="flex-1 sm:flex-none px-3.5 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
-            >
-              <BookOpen className="w-4 h-4 text-sky-700" />
-              <span>دليل البدء الفعلي</span>
-            </button>
-            <button
-              onClick={() => setShowClearConfirm(true)}
-              className="flex-1 sm:flex-none px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
-            >
-              <Trash2 className="w-4 h-4" />
-              <span>مسح وبدء التشغيل الفعلي</span>
-            </button>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-slate-900 text-sm">نظام مصنع مياهنا في وضع التشغيل الميداني الفعلي</span>
+              <span className="text-[10px] bg-emerald-200 text-emerald-950 font-bold px-2 py-0.5 rounded-full">
+                قاعدة البيانات الفعلية
+              </span>
+            </div>
+            <p className="text-xs text-slate-600 mt-0.5">
+              كافة العمليات والعملاء والرحلات المسجلة هي بيانات حقيقية لإنتاج وتوزيع المياه.
+            </p>
           </div>
         </div>
-      ) : (
-        <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-sky-50 border border-emerald-200 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-              <CheckCircle className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-slate-900 text-sm">نظام مصنع مياهنا في وضع التشغيل الميداني الفعلي</span>
-                <span className="text-[10px] bg-emerald-200 text-emerald-950 font-bold px-2 py-0.5 rounded-full">
-                  قاعدة البيانات جاهزة
-                </span>
-              </div>
-              <p className="text-xs text-slate-600 mt-0.5">
-                كافة العمليات والرحلات المسجلة هي بيانات حقيقية لإنتاج وتوزيع المياه في مأرب.
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 w-full sm:w-auto shrink-0">
-            <button
-              onClick={() => setShowGuideModal(true)}
-              className="flex-1 sm:flex-none px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg text-xs font-semibold hover:bg-slate-50 flex items-center justify-center gap-1.5 cursor-pointer"
-            >
-              <BookOpen className="w-3.5 h-3.5 text-sky-700" />
-              <span>دليل العمل الميداني</span>
-            </button>
-            <button
-              onClick={() => setManagerTab('orders')}
-              className="flex-1 sm:flex-none px-3.5 py-2 bg-sky-700 hover:bg-sky-800 text-white rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
-            >
-              <Droplets className="w-4 h-4" />
-              <span>+ تسجيل طلب مياه</span>
-            </button>
-          </div>
+        <div className="flex items-center gap-2 w-full sm:w-auto shrink-0">
+          <button
+            onClick={() => setShowGuideModal(true)}
+            className="flex-1 sm:flex-none px-3 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg text-xs font-semibold hover:bg-slate-50 flex items-center justify-center gap-1.5 cursor-pointer"
+          >
+            <BookOpen className="w-3.5 h-3.5 text-sky-700" />
+            <span>دليل العمل الميداني</span>
+          </button>
+          <button
+            onClick={() => setManagerTab('orders')}
+            className="flex-1 sm:flex-none px-3.5 py-2 bg-sky-700 hover:bg-sky-800 text-white rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+          >
+            <Droplets className="w-4 h-4" />
+            <span>+ تسجيل طلب مياه</span>
+          </button>
         </div>
-      )}
+      </div>
 
       {/* Top Banner & Quick Recommendation Alert */}
       {clusterProposals.length > 0 && (
@@ -237,7 +194,7 @@ export const DashboardOverview: React.FC = () => {
             <div>
               <h2 className="font-bold text-slate-900 text-sm">خريطة التوزيع المباشر – مديرية مأرب</h2>
               <p className="text-xs text-slate-500">
-                مواقع العملاء، مصنع المياه المركزي، ومسار الوايت الحالي عبر GPS وSMS
+                مواقع العملاء، مصنع المياه المركزي، ومسار الوايت الحالي عبر GPS التلقائي
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -328,14 +285,14 @@ export const DashboardOverview: React.FC = () => {
               </div>
             </div>
 
-            {/* Quick action button to driver simulator */}
+            {/* Quick action button to Trips & Driver */}
             <div className="mt-4 pt-3 border-t border-slate-100 flex gap-2">
               <button
-                onClick={() => setViewMode('simulator')}
+                onClick={() => setManagerTab('trips')}
                 className="flex-1 py-2 bg-amber-50 text-amber-800 border border-amber-200 rounded-lg text-xs font-semibold hover:bg-amber-100 transition-colors flex items-center justify-center gap-1.5"
               >
-                <Radio className="w-3.5 h-3.5" />
-                <span>محاكاة إرسال SMS</span>
+                <Navigation className="w-3.5 h-3.5" />
+                <span>مراجعة الرحلات والتتبع</span>
               </button>
               <button
                 onClick={() => setViewMode('driver')}
@@ -462,10 +419,12 @@ export const DashboardOverview: React.FC = () => {
                       <span className={`text-[10px] px-2 py-0.5 rounded font-medium ${
                         trip.status === 'in_progress'
                           ? 'bg-emerald-100 text-emerald-800'
-                          : trip.status === 'completed'
-                          ? 'bg-blue-100 text-blue-800'
-                          : trip.status === 'reconciled'
-                          ? 'bg-slate-100 text-slate-800'
+                          : trip.status === 'completed_pending_review' || trip.status === 'synced'
+                          ? 'bg-indigo-100 text-indigo-800'
+                          : trip.status === 'closed'
+                          ? 'bg-slate-200 text-slate-800'
+                          : trip.status === 'rejected'
+                          ? 'bg-rose-100 text-rose-800'
                           : 'bg-amber-100 text-amber-800'
                       }`}>
                         {getTripStatusArabic(trip.status)}
@@ -486,66 +445,6 @@ export const DashboardOverview: React.FC = () => {
         </div>
       </div>
 
-      {/* Confirmation Modal: Clear Demo Data & Start Real Operation */}
-      {showClearConfirm && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 text-xs space-y-4 animate-in fade-in zoom-in duration-150">
-            <div className="w-12 h-12 bg-rose-100 text-rose-700 rounded-xl flex items-center justify-center mx-auto">
-              <AlertTriangle className="w-6 h-6" />
-            </div>
-            <div className="text-center">
-              <h4 className="font-bold text-base text-slate-900">مسح البيانات التجريبية وبدء التشغيل الفعلي</h4>
-              <p className="text-slate-600 mt-2 leading-relaxed">
-                سيتم مسح جميع العملاء التجريبيين، والطلبات، والرحلات السابقة، وسجلات الـ GPS التجريبية نهائياً لتجهيز قاعدة البيانات للميدان.
-              </p>
-              <div className="mt-3 bg-slate-50 border border-slate-200 rounded-xl p-3 text-right space-y-1 text-[11px] text-slate-700">
-                <div className="font-bold text-slate-900 text-xs mb-1">ما الذي يتم الاحتفاظ به؟</div>
-                <div className="flex items-center gap-1.5 text-emerald-700">
-                  <CheckCircle className="w-3.5 h-3.5" />
-                  <span>معايير التسعير وتكلفة تحلية اللتر وسعر الديزل في مأرب</span>
-                </div>
-                <div className="flex items-center gap-1.5 text-emerald-700">
-                  <CheckCircle className="w-3.5 h-3.5" />
-                  <span>رمز مرور الدخول للوحة المدير العام</span>
-                </div>
-                <div className="flex items-center gap-1.5 text-emerald-700">
-                  <CheckCircle className="w-3.5 h-3.5" />
-                  <span>موقع المصنع المركزي بمأرب وبيانات شريحة سبأفون</span>
-                </div>
-              </div>
-            </div>
-            <div className="flex gap-2 pt-2">
-              <button
-                disabled={isClearing}
-                onClick={() => setShowClearConfirm(false)}
-                className="flex-1 py-2.5 border border-slate-200 rounded-xl font-bold text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
-              >
-                تراجع
-              </button>
-              <button
-                disabled={isClearing}
-                onClick={async () => {
-                  setIsClearing(true);
-                  await clearDemoData();
-                  setIsClearing(false);
-                  setShowClearConfirm(false);
-                }}
-                className="flex-1 py-2.5 bg-rose-600 text-white rounded-xl font-bold hover:bg-rose-700 transition-colors flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
-              >
-                {isClearing ? (
-                  <span>جاري التصفير...</span>
-                ) : (
-                  <>
-                    <Trash2 className="w-4 h-4" />
-                    <span>تأكيد والبدء الفعلي</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Field Operations Guide Modal (دليل خطوات التشغيل الفعلي) */}
       {showGuideModal && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs z-50 flex items-center justify-center p-4">
@@ -556,8 +455,8 @@ export const DashboardOverview: React.FC = () => {
                   <BookOpen className="w-5 h-5" />
                 </div>
                 <div>
-                  <h4 className="font-bold text-sm text-slate-900">دليل البدء والتشغيل الفعلي لمصنع مياهنا بمأرب</h4>
-                  <p className="text-[11px] text-slate-500">خارطة طريق كاملة من تصفير البيانات حتى تسوية الأرباح اليومية</p>
+                  <h4 className="font-bold text-sm text-slate-900">دليل البدء والتشغيل الفعلي لمصنع مياهنا</h4>
+                  <p className="text-[11px] text-slate-500">خارطة طريق كاملة من تهيئة السائقين والعملاء حتى تسوية الأرباح اليومية</p>
                 </div>
               </div>
               <button
@@ -572,9 +471,9 @@ export const DashboardOverview: React.FC = () => {
               <div className="p-3 bg-sky-50 border border-sky-100 rounded-xl flex items-start gap-3">
                 <span className="w-6 h-6 rounded-full bg-sky-700 text-white font-bold text-xs flex items-center justify-center shrink-0">1</span>
                 <div>
-                  <div className="font-bold text-slate-900 text-xs">تصفير البيانات التجريبية</div>
+                  <div className="font-bold text-slate-900 text-xs">تهيئة حسابات السائقين وموقع المصنع</div>
                   <p className="text-[11px] text-slate-600 mt-0.5">
-                    اضغط على زر <strong>«مسح وبدء التشغيل الفعلي»</strong>. ستصبح قاعدة البيانات نظيفة وجاهزة تماماً.
+                    من تبويب <strong>«السائق والوايت»</strong> أضف أو اعتمد حساب السائق بكلمة المرور، وتأكد من ضبط موقع المصنع من <strong>«إعدادات النظام»</strong>.
                   </p>
                 </div>
               </div>
@@ -584,7 +483,7 @@ export const DashboardOverview: React.FC = () => {
                 <div>
                   <div className="font-bold text-slate-900 text-xs">إضافة عملاء المصنع الحقيقيين</div>
                   <p className="text-[11px] text-slate-600 mt-0.5">
-                    من تبويب <strong>«العملاء»</strong>، اضغط <strong>«+ عميل جديد»</strong> وسجل أسماء العملاء، أرقام هواتفهم، الحي السكني، وسعة خزاناتهم ومواقعهم الجغرافية. يمكن للسائق أيضاً إضافة عملاء ميدانياً أثناء الجولات.
+                    من تبويب <strong>«العملاء»</strong>، اضغط <strong>«+ عميل جديد»</strong> وسجل أسماء العملاء، أرقام هواتفهم، الحي السكني، وسعة خزاناتهم ومواقعهم الجغرافية. يمكن للسائق أيضاً رفع زبائن جدد ميدانياً.
                   </p>
                 </div>
               </div>
@@ -592,9 +491,9 @@ export const DashboardOverview: React.FC = () => {
               <div className="p-3 bg-slate-50 border border-slate-100 rounded-xl flex items-start gap-3">
                 <span className="w-6 h-6 rounded-full bg-sky-700 text-white font-bold text-xs flex items-center justify-center shrink-0">3</span>
                 <div>
-                  <div className="font-bold text-slate-900 text-xs">استقبال وتسجيل طلبات المياه</div>
+                  <div className="font-bold text-slate-900 text-xs">استقبال ورفع طلبات المياه</div>
                   <p className="text-[11px] text-slate-600 mt-0.5">
-                    عند اتصال العميل أو مراسلته عبر واتساب أو سبأفون، سجل طلبه في تبويب <strong>«الطلبات»</strong> محددًا الكمية باللتر أو الطن ومدى استعجال الطلب.
+                    تُسجل الطلبات في تبويب <strong>«الطلبات»</strong> من لوحة المدير أو تُرفع مباشرة من تطبيق السائق ليراها المدير فوراً.
                   </p>
                 </div>
               </div>
@@ -602,9 +501,9 @@ export const DashboardOverview: React.FC = () => {
               <div className="p-3 bg-slate-50 border border-slate-100 rounded-xl flex items-start gap-3">
                 <span className="w-6 h-6 rounded-full bg-sky-700 text-white font-bold text-xs flex items-center justify-center shrink-0">4</span>
                 <div>
-                  <div className="font-bold text-slate-900 text-xs">التجميع الذكي واعتماد رحلة الوايت (6,000 لتر)</div>
+                  <div className="font-bold text-slate-900 text-xs">إعداد المخطط واعتماد رحلة الوايت من المدير</div>
                   <p className="text-[11px] text-slate-600 mt-0.5">
-                    في تبويب <strong>«التجميع الذكي»</strong>، ستقوم الخوارزمية تلقائياً بتجميع العملاء المتقاربين جغرافياً بحمولة لا تتجاوز 6,000 لتر، وحساب استهلاك الديزل وتكاليف التوصيل وصافي الربح المتوقع، والضغط على <strong>«اعتماد الرحلة وتكليف الوايت»</strong>.
+                    يقوم المدير بإعداد مخطط الوجهات من <strong>«إدارة الرحلات»</strong> أو <strong>«التجميع الذكي»</strong> واعتماده وإرساله للسائق للموافقة والتنفيذ.
                   </p>
                 </div>
               </div>
@@ -612,9 +511,9 @@ export const DashboardOverview: React.FC = () => {
               <div className="p-3 bg-slate-50 border border-slate-100 rounded-xl flex items-start gap-3">
                 <span className="w-6 h-6 rounded-full bg-sky-700 text-white font-bold text-xs flex items-center justify-center shrink-0">5</span>
                 <div>
-                  <div className="font-bold text-slate-900 text-xs">انطلاق السائق وتسليم المياه والتتبع دون إنترنت</div>
+                  <div className="font-bold text-slate-900 text-xs">تتبع GPS التلقائي والعمل دون إنترنت</div>
                   <p className="text-[11px] text-slate-600 mt-0.5">
-                    يفتح السائق تطبيقه على هاتف العمل (أندرويد) ليجد الرحلة المعتمدة وترتيب العملاء. يقوم بتسجيل الوصول، والكمية المسلمة، والمبلغ المستلم نقداً. التطبيق يعمل حتى دون إنترنت عبر الرسائل النصية القصيرة لشبكة سبأفون.
+                    يوافق السائق على الرحلة ويبدأها فتعمل حركة التتبع بالـ GPS تلقائياً حتى دون إنترنت عبر IndexedDB، وتتم المزامنة التلقائية فور عودة الاتصال.
                   </p>
                 </div>
               </div>
@@ -624,16 +523,13 @@ export const DashboardOverview: React.FC = () => {
                 <div>
                   <div className="font-bold text-slate-900 text-xs">عودة الوايت وتسوية العهدة النقدية والأرباح</div>
                   <p className="text-[11px] text-slate-600 mt-0.5">
-                    عند رجوع الوايت للمصنع، يتم فتح تبويب <strong>«تسوية عهدة السائق»</strong>، ومطابقة النقد الفعلي المحصل مع فواتير المياه، وخصم أي مصاريف ديزل معتمدة، وحساب الأرباح الصافية المحققة فوراً.
+                    عند رجوع الوايت للمصنع، يتم فتح تبويب <strong>«تسوية عهدة السائق»</strong>، ومطابقة النقد الفعلي المحصل مع فواتير المياه، وحساب الأرباح الصافية المحققة فوراً.
                   </p>
                 </div>
               </div>
             </div>
 
-            <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
-              <span className="text-[11px] text-slate-400">
-                ملاحظة: يمكنك في أي وقت من إعدادات النظام استعادة البيانات التجريبية لتدريب سائق جديد.
-              </span>
+            <div className="pt-3 border-t border-slate-100 flex items-center justify-end">
               <button
                 onClick={() => setShowGuideModal(false)}
                 className="px-4 py-2 bg-sky-700 text-white font-bold rounded-lg hover:bg-sky-800 transition-colors cursor-pointer"
@@ -689,22 +585,25 @@ function getOrderSourceArabic(source: string): string {
   switch (source) {
     case 'phone': return 'اتصال هاتفي';
     case 'whatsapp': return 'واتساب';
-    case 'sms': return 'رسالة SMS';
     case 'manager_manual': return 'إدخال المدير';
     case 'driver_manual': return 'إدخال السائق';
+    case 'customer_app': return 'تطبيق العميل';
     default: return source;
   }
 }
 
 function getTripStatusArabic(status: string): string {
   switch (status) {
-    case 'proposed': return 'مقترح للمدير';
-    case 'approved': return 'معتمد للخروج';
-    case 'loading': return 'جاري التعبئة';
-    case 'in_progress': return 'قيد التوصيل';
-    case 'returning': return 'عائد للمصنع';
-    case 'completed': return 'مكتملة';
-    case 'reconciled': return 'تمت تسوية العهدة';
+    case 'draft': return 'مسودة';
+    case 'pending_approval': return 'بانتظار الاعتماد';
+    case 'rejected': return 'مرفوضة';
+    case 'approved': return 'معتمدة للخروج';
+    case 'in_progress': return 'جارية الآن';
+    case 'returned_to_plant': return 'عادت للمصنع';
+    case 'pending_sync': return 'بانتظار المزامنة';
+    case 'synced': return 'تمت المزامنة';
+    case 'completed_pending_review': return 'مكتملة بانتظار المراجعة';
+    case 'closed': return 'مغلقة';
     default: return status;
   }
 }

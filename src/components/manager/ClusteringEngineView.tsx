@@ -49,7 +49,7 @@ export const ClusteringEngineView: React.FC = () => {
     setIsCreatingTrip(true);
     try {
       const newTrip = await createTripFromCluster(proposal);
-      setSuccessMessage(`تم بنجاح اعتماد وتوليد الرحلة المعتمدة ${newTrip.tripNumber} بحمولة ${newTrip.initialLoadLiters.toLocaleString()} لتر`);
+      setSuccessMessage(`تم اعتماد وتكليف طلب الرحلة ${newTrip.tripNumber} بحمولة ${newTrip.initialLoadLiters.toLocaleString()} لتر وإرساله لتطبيق السائق بانتظار موافقته`);
       setTimeout(() => {
         setManagerTab('trips');
       }, 1500);

@@ -12,7 +12,6 @@ import {
   MapPin,
   GitMerge,
   Truck,
-  MessageSquare,
   Receipt,
   Wallet,
   Fuel,
@@ -42,7 +41,8 @@ export const ManagerSidebar: React.FC = () => {
     setManagerTab,
     orders,
     trips,
-    smsLogs,
+    truck,
+    driverAccounts,
     clusterProposals,
     isMobileSidebarOpen,
     setIsMobileSidebarOpen,
@@ -53,9 +53,19 @@ export const ManagerSidebar: React.FC = () => {
   const pendingOrdersCount = orders.filter(
     (o) => o.status === 'new' || o.status === 'waiting_clustering'
   ).length;
+  const pendingDriversCount = driverAccounts.filter((d) => d.status === 'pending').length;
 
   const activeTrip = trips.find((t) => t.status === 'in_progress');
-  const proposedTripsCount = trips.filter((t) => t.status === 'proposed').length;
+  const pendingApprovalTripsCount = trips.filter((t) => t.status === 'pending_approval').length;
+  const pendingReviewTripsCount = trips.filter((t) => t.status === 'completed_pending_review').length;
+
+  const tripsBadge = activeTrip
+    ? 'رحلة جارية'
+    : pendingApprovalTripsCount > 0
+    ? `${pendingApprovalTripsCount} للاعتماد`
+    : pendingReviewTripsCount > 0
+    ? `${pendingReviewTripsCount} للمراجعة`
+    : undefined;
 
   const navItems: NavItem[] = [
     { id: 'overview', label: 'الرئيسية والمؤشرات', icon: LayoutDashboard },
@@ -76,26 +86,29 @@ export const ManagerSidebar: React.FC = () => {
     },
     {
       id: 'trips',
-      label: 'إدارة الرحلات والحمولة',
+      label: 'إدارة الرحلات وتتبع GPS',
       icon: Truck,
-      badge: activeTrip ? 'رحلة جارية' : proposedTripsCount > 0 ? `${proposedTripsCount} للاعتماد` : undefined,
-      badgeColor: activeTrip ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800',
+      badge: tripsBadge,
+      badgeColor: activeTrip
+        ? 'bg-emerald-100 text-emerald-800'
+        : pendingApprovalTripsCount > 0
+        ? 'bg-amber-100 text-amber-800'
+        : 'bg-indigo-100 text-indigo-800',
     },
     { id: 'map', label: 'خريطة التوزيع المباشر', icon: MapPin },
-    {
-      id: 'sms_gateway',
-      label: 'تتبع SMS سبأفون',
-      icon: MessageSquare,
-      badge: smsLogs.length > 0 ? smsLogs.length : undefined,
-      badgeColor: 'bg-slate-100 text-slate-700',
-    },
     { id: 'invoices', label: 'الفواتير والمبيعات', icon: Receipt },
     { id: 'reconciliation', label: 'تسوية عهدة السائق', icon: Wallet },
     { id: 'expenses', label: 'المصروفات والديزل', icon: Fuel },
     { id: 'profitability', label: 'المحاسبة والربحية', icon: TrendingUp },
     { id: 'reports', label: 'التقارير والإحصائيات (15)', icon: FileSpreadsheet },
-    { id: 'driver_mgmt', label: 'إدارة السائق والوايت', icon: UserCheck },
-    { id: 'settings', label: 'إعدادات النظام والتكاليف', icon: Settings },
+    {
+      id: 'driver_mgmt',
+      label: 'حسابات السائقين والوايت',
+      icon: UserCheck,
+      badge: pendingDriversCount > 0 ? `${pendingDriversCount} للاعتماد` : undefined,
+      badgeColor: 'bg-amber-100 text-amber-800',
+    },
+    { id: 'settings', label: 'إعدادات النظام والتتبع', icon: Settings },
     { id: 'manual', label: 'دليل المستخدم والتوثيق', icon: BookOpen },
   ];
 
@@ -106,7 +119,6 @@ export const ManagerSidebar: React.FC = () => {
 
   const sidebarContent = (
     <div className="flex flex-col h-full bg-white text-right">
-      {/* Mobile Drawer Top Bar */}
       <div className="p-3 border-b border-slate-100 flex items-center justify-between md:hidden">
         <div className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-lg bg-sky-700 text-white flex items-center justify-center">
@@ -126,10 +138,10 @@ export const ManagerSidebar: React.FC = () => {
       <div className="p-4 border-b border-slate-100 bg-sky-50/50">
         <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
           <span className="font-semibold text-slate-700">صهريج مياه مأرب</span>
-          <span className="font-mono text-sky-700 font-bold">6,000L</span>
+          <span className="font-mono text-sky-700 font-bold">{truck.maxCapacityLiters.toLocaleString()}L</span>
         </div>
         <div className="flex items-center justify-between text-xs mb-2">
-          <span className="text-slate-600">السائق: منصور الحارثي</span>
+          <span className="text-slate-600">السائق: {truck.driverName}</span>
           <span className="text-emerald-700 font-semibold">
             {activeTrip ? 'في رحلة توصيل' : 'جاهز بالمصنع'}
           </span>
@@ -138,13 +150,21 @@ export const ManagerSidebar: React.FC = () => {
           <div
             className="bg-sky-600 h-2 rounded-full transition-all duration-500"
             style={{
-              width: `${activeTrip ? (activeTrip.remainingLiters / 6000) * 100 : 100}%`,
+              width: `${
+                activeTrip
+                  ? (activeTrip.remainingLiters / truck.maxCapacityLiters) * 100
+                  : 100
+              }%`,
             }}
           />
         </div>
         <div className="flex justify-between text-[11px] text-slate-500 mt-1 font-mono">
-          <span>الماء: {activeTrip ? activeTrip.remainingLiters.toLocaleString() : '6,000'} لتر</span>
-          <span>{activeTrip ? `${Math.round((activeTrip.remainingLiters / 6000) * 100)}%` : '100%'}</span>
+          <span>
+            الماء: {activeTrip ? activeTrip.remainingLiters.toLocaleString() : truck.maxCapacityLiters.toLocaleString()} لتر
+          </span>
+          <span>
+            {activeTrip ? `${Math.round((activeTrip.remainingLiters / truck.maxCapacityLiters) * 100)}%` : '100%'}
+          </span>
         </div>
       </div>
 
@@ -207,28 +227,23 @@ export const ManagerSidebar: React.FC = () => {
 
       {/* Footer Branding */}
       <div className="p-3 border-t border-slate-100 text-[11px] text-slate-400 text-center">
-        مياهنا v2.6 · مديرية مأرب · سبأفون
+        مياهنا v3.0 · مديرية مأرب · تتبع GPS ومزامنة تلقائية
       </div>
     </div>
   );
 
   return (
     <>
-      {/* 1. Desktop Fixed Sidebar */}
       <aside className="hidden md:flex w-64 bg-white border-l border-slate-200 flex-col shrink-0 min-h-[calc(100vh-65px)]">
         {sidebarContent}
       </aside>
 
-      {/* 2. Mobile Slide-Over Drawer with Backdrop */}
       {isMobileSidebarOpen && (
         <div className="fixed inset-0 z-50 md:hidden">
-          {/* Backdrop overlay */}
           <div
             className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs transition-opacity"
             onClick={() => setIsMobileSidebarOpen(false)}
           />
-
-          {/* Drawer content sliding in from right (RTL) */}
           <div className="fixed inset-y-0 right-0 max-w-xs w-full bg-white shadow-2xl z-50 flex flex-col animate-in slide-in-from-right duration-200">
             {sidebarContent}
           </div>

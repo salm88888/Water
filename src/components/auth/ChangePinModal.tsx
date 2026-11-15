@@ -119,7 +119,7 @@ export const ChangePinModal: React.FC = () => {
               required
               value={currentPin}
               onChange={(e) => setCurrentPin(e.target.value)}
-              placeholder="الرمز الحالي (الافتراضي 20262027)"
+              placeholder="أدخل الرمز الحالي"
               className="w-full p-2.5 border border-slate-200 rounded-lg font-mono tracking-widest text-left"
               style={{ direction: 'ltr' }}
             />

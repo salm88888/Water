@@ -10,6 +10,7 @@ import { MapPin } from 'lucide-react';
 import { AppProvider, useApp } from './context/AppContext';
 import { RoleSelectionPortal } from './components/auth/RoleSelectionPortal';
 import { ManagerPinModal } from './components/auth/ManagerPinModal';
+import { DriverAuthScreen } from './components/auth/DriverAuthScreen';
 import { ChangePinModal } from './components/auth/ChangePinModal';
 import { ManagerHeader } from './components/manager/ManagerHeader';
 import { ManagerSidebar } from './components/manager/ManagerSidebar';
@@ -18,7 +19,6 @@ import { CustomerManagement } from './components/manager/CustomerManagement';
 import { OrderManagement } from './components/manager/OrderManagement';
 import { ClusteringEngineView } from './components/manager/ClusteringEngineView';
 import { TripsManagement } from './components/manager/TripsManagement';
-import { SmsGatewayMonitor } from './components/manager/SmsGatewayMonitor';
 import { InvoicingAndCash } from './components/manager/InvoicingAndCash';
 import { DriverReconciliationView } from './components/manager/DriverReconciliationView';
 import { ExpensesAndFuel } from './components/manager/ExpensesAndFuel';
@@ -28,7 +28,6 @@ import { DriverAndTruckView } from './components/manager/DriverAndTruckView';
 import { SystemSettingsView } from './components/manager/SystemSettingsView';
 import { DocumentationGuides } from './components/manager/DocumentationGuides';
 import { DriverApp } from './components/driver/DriverApp';
-import { DeviceSimulator } from './components/simulator/DeviceSimulator';
 import { NewOrderModal } from './components/modals/NewOrderModal';
 import { MaribMap } from './components/common/MaribMap';
 import { LocationPickerMapModal } from './components/common/LocationPickerMapModal';
@@ -37,6 +36,7 @@ function MainAppContent() {
   const {
     savedRole,
     selectRole,
+    driverSession,
     viewMode,
     managerTab,
     setManagerTab,
@@ -52,7 +52,6 @@ function MainAppContent() {
   const [isNewOrderModalOpen, setIsNewOrderModalOpen] = useState(false);
   const [isPlantPickerOpen, setIsPlantPickerOpen] = useState(false);
 
-  // 1. Initial Screen: Show the Two Big Buttons (Manager & Driver) if no role is selected
   if (!savedRole) {
     return (
       <>
@@ -72,21 +71,10 @@ function MainAppContent() {
     );
   }
 
-  // 2. Driver Mode (Tactile Android Mobile App)
   if (savedRole === 'driver' || viewMode === 'driver') {
-    return <DriverApp />;
+    return driverSession ? <DriverApp /> : <DriverAuthScreen />;
   }
 
-  // 3. Hardware Simulator Mode (when manager toggles simulator tab)
-  if (viewMode === 'simulator') {
-    return (
-      <div className="min-h-screen bg-slate-100 p-3 sm:p-6">
-        <DeviceSimulator />
-      </div>
-    );
-  }
-
-  // 4. Manager Mode (Responsive for Phone, Tablet & Laptop)
   const activeTrip = trips.find((t) => t.status === 'in_progress');
 
   return (
@@ -112,7 +100,7 @@ function MainAppContent() {
                     خريطة التوزيع المباشر والتتبع في مأرب
                   </h2>
                   <p className="text-xs text-slate-500">
-                    مواقع العملاء ({customers.length})، مصنع المياه المركزي، مسار الوايت الحالي وأثر نقاط GPS المرسلة عبر SMS
+                    مواقع العملاء ({customers.length})، مصنع المياه المركزي، مسار الوايت الفعلي ونقاط تتبع GPS التلقائي
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
@@ -145,7 +133,6 @@ function MainAppContent() {
               </div>
             </div>
           )}
-          {managerTab === 'sms_gateway' && <SmsGatewayMonitor />}
           {managerTab === 'invoices' && <InvoicingAndCash />}
           {managerTab === 'reconciliation' && <DriverReconciliationView />}
           {managerTab === 'expenses' && <ExpensesAndFuel />}
@@ -157,7 +144,6 @@ function MainAppContent() {
         </main>
       </div>
 
-      {/* Global Modals */}
       <NewOrderModal
         isOpen={isNewOrderModalOpen}
         onClose={() => setIsNewOrderModalOpen(false)}

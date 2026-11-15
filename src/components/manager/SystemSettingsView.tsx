@@ -12,7 +12,6 @@ import {
   Radio,
   MapPin,
   Save,
-  RotateCcw,
   Trash2,
   CheckCircle,
   AlertTriangle,
@@ -25,7 +24,7 @@ import { useApp } from '../../context/AppContext';
 import { LocationPickerMapModal } from '../common/LocationPickerMapModal';
 
 export const SystemSettingsView: React.FC = () => {
-  const { settings, customers, updateSettings, resetDemoData, clearDemoData, setIsChangePinModalOpen } = useApp();
+  const { settings, customers, updateSettings, clearDemoData, setIsChangePinModalOpen } = useApp();
 
   const [form, setForm] = useState({ ...settings });
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -48,9 +47,11 @@ export const SystemSettingsView: React.FC = () => {
       driverWagePerTrip: Number(form.driverWagePerTrip),
       stopDetectionMinutes: Number(form.stopDetectionMinutes),
       minMovementSpeedKmH: Number(form.minMovementSpeedKmH),
-      periodicHeartbeatMinutes: Number(form.periodicHeartbeatMinutes),
-      sabafonCenterNumber: form.sabafonCenterNumber,
-      driverSabafonNumber: form.driverSabafonNumber,
+      stopRadiusMeters: Number(form.stopRadiusMeters),
+      plantGeofenceMeters: Number(form.plantGeofenceMeters),
+      gpsSampleIntervalSeconds: Number(form.gpsSampleIntervalSeconds),
+      gpsWeakAccuracyMeters: Number(form.gpsWeakAccuracyMeters),
+      gpsGapSeconds: Number(form.gpsGapSeconds),
       plantLocation: form.plantLocation,
     });
     setSaveSuccess(true);
@@ -85,9 +86,9 @@ export const SystemSettingsView: React.FC = () => {
     <div className="space-y-6 max-w-4xl">
       {/* Header */}
       <div>
-        <h2 className="text-lg font-bold text-slate-900">إعدادات النظام، أسعار التكاليف ومعايير التتبع</h2>
+        <h2 className="text-lg font-bold text-slate-900">إعدادات النظام، أسعار التكاليف ومعايير التتبع GPS</h2>
         <p className="text-xs text-slate-500">
-          تعديل معايير التسعير وتكاليف إنتاج ونقل المياه، حساسية GPS، شريحة سبأفون ومسح البيانات التجريبية
+          تعديل معايير التسعير وتكاليف إنتاج ونقل المياه، شروط اكتشاف التوقفات، ونطاق المصنع الجغرافي
         </p>
       </div>
 
@@ -113,7 +114,7 @@ export const SystemSettingsView: React.FC = () => {
                 </span>
               </h3>
               <p className="text-[11px] text-slate-300 mt-0.5">
-                الرمز الحالي المعتمد: <span className="font-mono tracking-widest text-white font-bold bg-white/10 px-2 py-0.5 rounded">••••••••</span> (الافتراضي 20262027 ما لم يتم تغييره)
+                الرمز الحالي المعتمد: <span className="font-mono tracking-widest text-white font-bold bg-white/10 px-2 py-0.5 rounded">••••••••</span> محفوظ ضمن إعدادات النظام (يمكن تغييره في أي وقت)
               </p>
             </div>
           </div>
@@ -220,71 +221,107 @@ export const SystemSettingsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Section 2: GPS & Sabafon Tracking Settings */}
+        {/* Section 2: Automatic GPS & Stop Detection Settings */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
           <h3 className="font-bold text-slate-900 text-sm pb-2 border-b border-slate-100 flex items-center gap-2">
             <Radio className="w-4 h-4 text-emerald-700" />
-            <span>معايير تتبع GPS وشريحة سبأفون ومنع الرسائل الوهمية</span>
+            <span>معايير التتبع التلقائي عبر GPS وشروط اكتشاف التوقفات</span>
           </h3>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-slate-700 font-semibold mb-1">
                 مدة التوقف لاعتباره توقفاً فعلياً (دقائق) *
               </label>
               <input
                 type="number"
+                min={1}
                 value={form.stopDetectionMinutes}
                 onChange={(e) => setForm({ ...form, stopDetectionMinutes: Number(e.target.value) })}
                 className="w-full p-2.5 border border-slate-200 rounded-lg font-mono"
               />
-              <span className="text-[10px] text-slate-400 mt-1 block">لمنع رسائل التوقف عند الإشارات وزحام المرور</span>
+              <span className="text-[10px] text-slate-400 mt-1 block">لتمييز التوقف الفعلي عن إشارات المرور والازدحام المؤقت</span>
             </div>
 
             <div>
               <label className="block text-slate-700 font-semibold mb-1">
-                الحد الأدنى لسرعة الحركة (كم/ساعة) *
+                حد سرعة السكون / التوقف (كم/ساعة) *
               </label>
               <input
                 type="number"
+                min={1}
                 value={form.minMovementSpeedKmH}
                 onChange={(e) => setForm({ ...form, minMovementSpeedKmH: Number(e.target.value) })}
                 className="w-full p-2.5 border border-slate-200 rounded-lg font-mono"
               />
-              <span className="text-[10px] text-slate-400 mt-1 block">لتفادي اهتزاز الهاتف وتغيرات GPS العشوائية</span>
+              <span className="text-[10px] text-slate-400 mt-1 block">السرعة الأقل من هذا الحد تُعد توقفاً عن الحركة</span>
             </div>
 
             <div>
               <label className="block text-slate-700 font-semibold mb-1">
-                فترة التحديث الدوري عبر SMS (دقائق) *
+                نطاق ربط التوقف بموقع الزبون (متر) *
               </label>
               <input
                 type="number"
-                value={form.periodicHeartbeatMinutes}
-                onChange={(e) => setForm({ ...form, periodicHeartbeatMinutes: Number(e.target.value) })}
+                min={10}
+                value={form.stopRadiusMeters}
+                onChange={(e) => setForm({ ...form, stopRadiusMeters: Number(e.target.value) })}
                 className="w-full p-2.5 border border-slate-200 rounded-lg font-mono text-sky-800 font-bold"
               />
-              <span className="text-[10px] text-slate-400 mt-1 block">يرسل نبضة موقع دورية أثناء الرحلة النشطة فقط</span>
+              <span className="text-[10px] text-slate-400 mt-1 block">يربط التوقف بأقرب زبون ضمن هذا النطاق</span>
             </div>
 
             <div>
-              <label className="block text-slate-700 font-semibold mb-1">رقم شريحة هاتف السائق (سبأفون)</label>
+              <label className="block text-slate-700 font-semibold mb-1">
+                نطاق المصنع الجغرافي للعودة (متر) *
+              </label>
               <input
-                type="text"
-                value={form.driverSabafonNumber}
-                onChange={(e) => setForm({ ...form, driverSabafonNumber: e.target.value })}
-                className="w-full p-2.5 border border-slate-200 rounded-lg font-mono"
+                type="number"
+                min={20}
+                value={form.plantGeofenceMeters}
+                onChange={(e) => setForm({ ...form, plantGeofenceMeters: Number(e.target.value) })}
+                className="w-full p-2.5 border border-slate-200 rounded-lg font-mono text-emerald-700 font-bold"
               />
+              <span className="text-[10px] text-slate-400 mt-1 block">لاكتشاف عودة الوايت إلى المصنع تلقائياً</span>
             </div>
 
             <div>
-              <label className="block text-slate-700 font-semibold mb-1">رقم هاتف المدير / مركز رسائل استقبال المصنع</label>
+              <label className="block text-slate-700 font-semibold mb-1">
+                فاصل تسجيل نقاط GPS (ثانية) *
+              </label>
               <input
-                type="text"
-                value={form.sabafonCenterNumber}
-                onChange={(e) => setForm({ ...form, sabafonCenterNumber: e.target.value })}
+                type="number"
+                min={3}
+                value={form.gpsSampleIntervalSeconds}
+                onChange={(e) => setForm({ ...form, gpsSampleIntervalSeconds: Number(e.target.value) })}
                 className="w-full p-2.5 border border-slate-200 rounded-lg font-mono"
               />
+              <span className="text-[10px] text-slate-400 mt-1 block">كل كم ثانية تُحفظ نقطة موقع أثناء الرحلة</span>
+            </div>
+
+            <div>
+              <label className="block text-slate-700 font-semibold mb-1">
+                حد دقة الإشارة الضعيفة (متر) / الفجوة (ثانية)
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="number"
+                  min={15}
+                  value={form.gpsWeakAccuracyMeters}
+                  onChange={(e) => setForm({ ...form, gpsWeakAccuracyMeters: Number(e.target.value) })}
+                  className="w-full p-2.5 border border-slate-200 rounded-lg font-mono"
+                  title="حد الدقة الضعيفة بالمتر"
+                />
+                <input
+                  type="number"
+                  min={30}
+                  value={form.gpsGapSeconds}
+                  onChange={(e) => setForm({ ...form, gpsGapSeconds: Number(e.target.value) })}
+                  className="w-full p-2.5 border border-slate-200 rounded-lg font-mono"
+                  title="مدة الفجوة الزمنية بالثانية"
+                />
+              </div>
+              <span className="text-[10px] text-slate-400 mt-1 block">لتنبيه المدير عند ضعف أو انقطاع إشارة GPS</span>
             </div>
           </div>
         </div>
@@ -389,32 +426,24 @@ export const SystemSettingsView: React.FC = () => {
         </div>
       </form>
 
-      {/* Production Demo Data Management */}
+      {/* Operational Database Reset */}
       <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4 text-xs">
         <h3 className="font-bold text-slate-900 text-sm pb-2 border-b border-slate-100 flex items-center gap-2 text-rose-800">
           <AlertTriangle className="w-4 h-4" />
-          <span>إدارة البيانات التجريبية والتجهيز للتشغيل الفعلي</span>
+          <span>تصفير سجلات التشغيل وإعادة الضبط</span>
         </h3>
 
         <p className="text-slate-600 leading-relaxed">
-          وفقاً لمتطلبات المشروع، يمكنك في أي وقت استعادة بيانات مأرب التجريبية لاختبار الخوارزميات وتدريب السائق، أو مسح كافة البيانات التجريبية نهائياً وتفريغ الجداول لبدء تشغيل المصنع الفعلي.
+          يتيح هذا الخيار مسح كافة السجلات التشغيلية الحالية (العملاء، الطلبات، الرحلات، الفواتير، والمصاريف) من الخادم وتطبيقات السائقين مع الإبقاء على إعدادات المصنع ورمز المدير وحسابات السائقين الحقيقية.
         </p>
 
         <div className="flex flex-wrap gap-3 pt-2">
-          <button
-            onClick={resetDemoData}
-            className="px-4 py-2 border border-slate-200 bg-white text-slate-700 rounded-lg font-semibold hover:bg-slate-50 flex items-center gap-1.5 shadow-xs"
-          >
-            <RotateCcw className="w-4 h-4 text-sky-700" />
-            <span>استعادة بيانات العرض التجريبية لمأرب</span>
-          </button>
-
           <button
             onClick={() => setShowClearConfirm(true)}
             className="px-4 py-2 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg font-semibold hover:bg-rose-100 flex items-center gap-1.5 shadow-xs"
           >
             <Trash2 className="w-4 h-4" />
-            <span>مسح كافة البيانات التجريبية والبدء الفعلي</span>
+            <span>مسح وتصفير كافة السجلات (الخادم والسائقين)</span>
           </button>
         </div>
       </div>
@@ -427,9 +456,9 @@ export const SystemSettingsView: React.FC = () => {
               <AlertTriangle className="w-6 h-6" />
             </div>
             <div className="text-center">
-              <h4 className="font-bold text-base text-slate-900">هل أنت متأكد من مسح البيانات التجريبية؟</h4>
+              <h4 className="font-bold text-base text-slate-900">هل أنت متأكد من تصفير السجلات؟</h4>
               <p className="text-slate-500 mt-1">
-                سيتم تصفير جميع العملاء والطلبات والفواتير وسجلات GPS التجريبية لتجهيز قاعدة البيانات للتشغيل الميداني الفعلي لمصنع مياهنا.
+                سيتم حذف جميع العملاء والطلبات والفواتير وسجلات GPS في الخادم، وكذلك تصفير التخزين المحلي لدى السائقين مع الاحتفاظ بإعدادات المصنع وحسابات السائقين المعتمدة.
               </p>
             </div>
             <div className="flex gap-2 pt-2">
@@ -446,7 +475,7 @@ export const SystemSettingsView: React.FC = () => {
                 }}
                 className="flex-1 py-2 bg-rose-600 text-white rounded-lg font-bold hover:bg-rose-700"
               >
-                تأكيد ومسح
+                تأكيد التصفير
               </button>
             </div>
           </div>

@@ -63,7 +63,7 @@ export const OrderManagement: React.FC<OrderManagementProps> = ({ onOpenNewOrder
         <div>
           <h2 className="text-lg font-bold text-slate-900">سجل طلبات المياه المركزية ({orders.length})</h2>
           <p className="text-xs text-slate-500">
-            استقبال الطلبات من الاتصالات، واتساب، SMS، وتطبيق السائق مع كشف التكرار الآلي
+            استقبال الطلبات من الاتصالات، واتساب، وتطبيق السائق مع كشف التكرار الآلي
           </p>
         </div>
         <div className="flex items-center gap-2 self-start sm:self-auto">
@@ -122,7 +122,6 @@ export const OrderManagement: React.FC<OrderManagementProps> = ({ onOpenNewOrder
             <option value="all">كافة المصادر</option>
             <option value="phone">اتصال هاتفي</option>
             <option value="whatsapp">واتساب</option>
-            <option value="sms">رسالة SMS</option>
             <option value="manager_manual">إدخال المدير</option>
             <option value="driver_manual">إدخال السائق</option>
           </select>
@@ -236,7 +235,6 @@ function getSourceIcon(source: OrderSource) {
   switch (source) {
     case 'phone': return <Phone className="w-3 h-3 text-sky-600" />;
     case 'whatsapp': return <MessageSquare className="w-3 h-3 text-emerald-600" />;
-    case 'sms': return <MessageSquare className="w-3 h-3 text-blue-600" />;
     case 'driver_manual': return <Smartphone className="w-3 h-3 text-amber-600" />;
     default: return <User className="w-3 h-3 text-slate-600" />;
   }
@@ -246,7 +244,6 @@ function getOrderSourceArabic(source: OrderSource): string {
   switch (source) {
     case 'phone': return 'اتصال هاتفي';
     case 'whatsapp': return 'واتساب';
-    case 'sms': return 'رسالة SMS';
     case 'manager_manual': return 'إدخال المدير';
     case 'driver_manual': return 'إدخال السائق';
     case 'customer_app': return 'تطبيق العميل';

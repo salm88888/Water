@@ -37,7 +37,7 @@ export const ReportsCenter: React.FC = () => {
     { id: 9, title: 'تقرير المصروفات والتشغيل', desc: 'بيان مصروفات الصيانة، الزيوت، والمولد' },
     { id: 10, title: 'تقرير الأرباح والخسائر P&L', desc: 'قائمة الدخل: الإيرادات ناقص تكاليف الإنتاج والنقل' },
     { id: 11, title: 'تقرير أداء السائق والوايت', desc: 'كفاءة التسليم والالتزام بالوقت والتحصيل' },
-    { id: 12, title: 'تقرير حركة الوايت وتتبع GPS', desc: 'سجل أحداث الحركة والتوقف والوصول عبر SMS' },
+    { id: 12, title: 'تقرير حركة الوايت وتتبع GPS', desc: 'سجل أحداث الحركة والتوقفات والمسار الفعلي عبر GPS' },
     { id: 13, title: 'تقرير تكلفة التوصيل للمنزل', desc: 'متوسط تكلفة النقل لكل منزل في أحياء مأرب' },
     { id: 14, title: 'تقرير استغلال حمولة الوايت (6000L)', desc: 'نسبة استغلال سعة الصهريج لكل دورة توزيع' },
     { id: 15, title: 'تقرير أداء المناطق والأحياء', desc: 'حجم الطلبات واللترات في الروضة، الشركة، المجمع، إلخ' },
@@ -351,7 +351,19 @@ export const ReportsCenter: React.FC = () => {
                       {(t.actualRevenue || t.expectedRevenue).toLocaleString()} ر.ي
                     </td>
                     <td className="py-2.5 px-3 font-mono">{t.actualDistanceKm || t.estimatedDistanceKm} كم</td>
-                    <td className="py-2.5 px-3 text-slate-600 font-semibold">{t.status}</td>
+                    <td className="py-2.5 px-3 text-slate-600 font-semibold">
+                      {t.status === 'closed'
+                        ? 'مغلقة'
+                        : t.status === 'completed_pending_review'
+                        ? 'مكتملة بانتظار المراجعة'
+                        : t.status === 'in_progress'
+                        ? 'جارية الآن'
+                        : t.status === 'approved'
+                        ? 'معتمدة'
+                        : t.status === 'pending_approval'
+                        ? 'بانتظار الاعتماد'
+                        : t.status}
+                    </td>
                   </tr>
                 ))}
               </tbody>

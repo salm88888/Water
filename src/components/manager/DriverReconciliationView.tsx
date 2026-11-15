@@ -33,9 +33,13 @@ export const DriverReconciliationView: React.FC = () => {
   const [authorizedExpenses, setAuthorizedExpenses] = useState<number>(0);
   const [notes, setNotes] = useState<string>('');
 
-  // Unreconciled completed trips
+  // Unreconciled completed/returned trips
   const unreconciledTrips = trips.filter(
-    (t) => t.status === 'completed' || (t.status === 'in_progress' && t.deliveredLiters > 0)
+    (t) =>
+      t.status === 'completed_pending_review' ||
+      t.status === 'synced' ||
+      t.status === 'returned_to_plant' ||
+      (t.status === 'in_progress' && t.deliveredLiters > 0)
   );
 
   const selectedTrip = trips.find((t) => t.id === selectedTripId);
