@@ -4,7 +4,7 @@
  * Miyahna - Driver Cash Reconciliation (تسوية عهدة السائق المالية)
  */
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Wallet,
   CheckCircle,
@@ -14,6 +14,7 @@ import {
   Plus,
   ShieldCheck,
   Calendar,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { DriverReconciliation } from '../../types';
@@ -32,6 +33,8 @@ export const DriverReconciliationView: React.FC = () => {
   const [actualHandedOver, setActualHandedOver] = useState<number>(0);
   const [authorizedExpenses, setAuthorizedExpenses] = useState<number>(0);
   const [notes, setNotes] = useState<string>('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
 
   // Unreconciled completed/returned trips
   const unreconciledTrips = trips.filter(
@@ -65,22 +68,29 @@ export const DriverReconciliationView: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedTrip) return;
+    if (!selectedTrip || submitLockRef.current) return;
 
-    await submitDriverReconciliation({
-      tripId: selectedTrip.id,
-      tripNumber: selectedTrip.tripNumber,
-      driverId: selectedTrip.driverId,
-      driverName: selectedTrip.driverName,
-      totalInvoicedAmount: totalInvoiced,
-      totalCashCollected: totalCollectedCash,
-      actualCashHandedOver: Number(actualHandedOver),
-      authorizedExpensesDeducted: Number(authorizedExpenses),
-      differenceAmount: difference,
-      notes,
-    });
+    submitLockRef.current = true;
+    setIsSubmitting(true);
+    try {
+      await submitDriverReconciliation({
+        tripId: selectedTrip.id,
+        tripNumber: selectedTrip.tripNumber,
+        driverId: selectedTrip.driverId,
+        driverName: selectedTrip.driverName,
+        totalInvoicedAmount: totalInvoiced,
+        totalCashCollected: totalCollectedCash,
+        actualCashHandedOver: Number(actualHandedOver),
+        authorizedExpensesDeducted: Number(authorizedExpenses),
+        differenceAmount: difference,
+        notes,
+      });
 
-    setShowAddModal(false);
+      setShowAddModal(false);
+    } finally {
+      submitLockRef.current = false;
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -291,17 +301,19 @@ export const DriverReconciliationView: React.FC = () => {
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-3">
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={() => setShowAddModal(false)}
-                  className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 font-medium"
+                  className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 font-medium disabled:opacity-50"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-sky-700 text-white rounded-lg hover:bg-sky-800 font-semibold flex items-center gap-1.5"
+                  disabled={isSubmitting}
+                  className="px-5 py-2 bg-sky-700 text-white rounded-lg hover:bg-sky-800 disabled:opacity-60 font-semibold flex items-center gap-1.5"
                 >
-                  <ShieldCheck className="w-4 h-4" />
-                  <span>اعتماد وإغلاق التسوية</span>
+                  {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                  <span>{isSubmitting ? 'جاري الاعتماد...' : 'اعتماد وإغلاق التسوية'}</span>
                 </button>
               </div>
             </form>

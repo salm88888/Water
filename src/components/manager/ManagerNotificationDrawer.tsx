@@ -4,7 +4,7 @@
  * Miyahna - Manager Real-Time Notification Center & Driver Directive Drawer
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   Bell,
   CheckCircle2,
@@ -20,6 +20,7 @@ import {
   Wifi,
   WifiOff,
   Radio,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
@@ -57,6 +58,9 @@ export const ManagerNotificationDrawer: React.FC<ManagerNotificationDrawerProps>
   const [dirPriority, setDirPriority] = useState<'normal' | 'urgent'>('urgent');
   const [dirFeedback, setDirFeedback] = useState<string | null>(null);
   const [isSendingDir, setIsSendingDir] = useState(false);
+  const [busyActionKey, setBusyActionKey] = useState<string | null>(null);
+  const dirLockRef = useRef(false);
+  const actionLockRef = useRef(false);
 
   const pendingDriverAccounts = useMemo(
     () => driverAccounts.filter((d) => d.status === 'pending'),
@@ -129,24 +133,41 @@ export const ManagerNotificationDrawer: React.FC<ManagerNotificationDrawerProps>
 
   const handleSendDirective = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!dirTitle.trim() || !dirMessage.trim()) return;
+    if (dirLockRef.current || !dirTitle.trim() || !dirMessage.trim()) return;
+    dirLockRef.current = true;
     setIsSendingDir(true);
     setDirFeedback(null);
-    const res = await sendManagerDirective({
-      title: dirTitle.trim(),
-      message: dirMessage.trim(),
-      priority: dirPriority,
-      tripId: activeTrip?.id,
-      tripNumber: activeTrip?.tripNumber,
-    });
-    setIsSendingDir(false);
-    if (res.success) {
-      setDirTitle('');
-      setDirMessage('');
-      setDirFeedback('تم إرسال التوجيه فوراً إلى تطبيق السائق.');
-      setTimeout(() => setDirFeedback(null), 4000);
-    } else {
-      setDirFeedback(res.error || 'تعذر الإرسال');
+    try {
+      const res = await sendManagerDirective({
+        title: dirTitle.trim(),
+        message: dirMessage.trim(),
+        priority: dirPriority,
+        tripId: activeTrip?.id,
+        tripNumber: activeTrip?.tripNumber,
+      });
+      if (res.success) {
+        setDirTitle('');
+        setDirMessage('');
+        setDirFeedback('تم إرسال التوجيه فوراً إلى تطبيق السائق.');
+        setTimeout(() => setDirFeedback(null), 4000);
+      } else {
+        setDirFeedback(res.error || 'تعذر الإرسال');
+      }
+    } finally {
+      dirLockRef.current = false;
+      setIsSendingDir(false);
+    }
+  };
+
+  const runDrawerAction = async (key: string, fn: () => Promise<unknown>) => {
+    if (actionLockRef.current) return;
+    actionLockRef.current = true;
+    setBusyActionKey(key);
+    try {
+      await fn();
+    } finally {
+      actionLockRef.current = false;
+      setBusyActionKey(null);
     }
   };
 
@@ -254,16 +275,26 @@ export const ManagerNotificationDrawer: React.FC<ManagerNotificationDrawerProps>
                       </p>
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => approveDriverAccount(acc.id)}
-                          className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold"
+                          type="button"
+                          disabled={Boolean(busyActionKey)}
+                          onClick={() => runDrawerAction(`acc-approve:${acc.id}`, () => approveDriverAccount(acc.id))}
+                          className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-lg font-bold flex items-center justify-center gap-1"
                         >
-                          اعتماد الحساب
+                          {busyActionKey === `acc-approve:${acc.id}` && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                          <span>اعتماد الحساب</span>
                         </button>
                         <button
-                          onClick={() => rejectDriverAccount(acc.id, 'مرفوض من مركز الإشعارات')}
-                          className="px-3 py-1.5 bg-rose-100 hover:bg-rose-200 text-rose-800 rounded-lg font-bold"
+                          type="button"
+                          disabled={Boolean(busyActionKey)}
+                          onClick={() =>
+                            runDrawerAction(`acc-reject:${acc.id}`, () =>
+                              rejectDriverAccount(acc.id, 'مرفوض من مركز الإشعارات')
+                            )
+                          }
+                          className="px-3 py-1.5 bg-rose-100 hover:bg-rose-200 disabled:opacity-60 text-rose-800 rounded-lg font-bold flex items-center gap-1"
                         >
-                          رفض
+                          {busyActionKey === `acc-reject:${acc.id}` && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                          <span>رفض</span>
                         </button>
                       </div>
                     </div>
@@ -353,10 +384,20 @@ export const ManagerNotificationDrawer: React.FC<ManagerNotificationDrawerProps>
                       </p>
                       <div className="flex items-center gap-2 pt-1">
                         <button
-                          onClick={() => approveTrip(trip.id, 'اعتماد سريع من مركز الإشعارات')}
-                          className="flex-1 py-1.5 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold flex items-center justify-center gap-1"
+                          type="button"
+                          disabled={Boolean(busyActionKey)}
+                          onClick={() =>
+                            runDrawerAction(`trip-approve:${trip.id}`, () =>
+                              approveTrip(trip.id, 'اعتماد سريع من مركز الإشعارات')
+                            )
+                          }
+                          className="flex-1 py-1.5 px-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-lg font-bold flex items-center justify-center gap-1"
                         >
-                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          {busyActionKey === `trip-approve:${trip.id}` ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                          )}
                           <span>اعتماد فوري</span>
                         </button>
                         <button
@@ -396,16 +437,30 @@ export const ManagerNotificationDrawer: React.FC<ManagerNotificationDrawerProps>
                       </p>
                       <div className="flex items-center gap-2 pt-1">
                         <button
-                          onClick={() => approveTripModification(tripId, request.id)}
-                          className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold"
+                          type="button"
+                          disabled={Boolean(busyActionKey)}
+                          onClick={() =>
+                            runDrawerAction(`mod-approve:${request.id}`, () =>
+                              approveTripModification(tripId, request.id)
+                            )
+                          }
+                          className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-lg font-bold flex items-center justify-center gap-1"
                         >
-                          موافقة على التعديل
+                          {busyActionKey === `mod-approve:${request.id}` && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                          <span>موافقة على التعديل</span>
                         </button>
                         <button
-                          onClick={() => rejectTripModification(tripId, request.id)}
-                          className="py-1.5 px-3 bg-rose-100 hover:bg-rose-200 text-rose-800 rounded-lg font-bold"
+                          type="button"
+                          disabled={Boolean(busyActionKey)}
+                          onClick={() =>
+                            runDrawerAction(`mod-reject:${request.id}`, () =>
+                              rejectTripModification(tripId, request.id)
+                            )
+                          }
+                          className="py-1.5 px-3 bg-rose-100 hover:bg-rose-200 disabled:opacity-60 text-rose-800 rounded-lg font-bold flex items-center gap-1"
                         >
-                          رفض
+                          {busyActionKey === `mod-reject:${request.id}` && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                          <span>رفض</span>
                         </button>
                       </div>
                     </div>
@@ -604,7 +659,7 @@ export const ManagerNotificationDrawer: React.FC<ManagerNotificationDrawerProps>
                     required
                     value={dirTitle}
                     onChange={(e) => setDirTitle(e.target.value)}
-                    placeholder="مثال: توصيل أولوية لحي الروضة"
+                    placeholder="مثال: توصيل أولوية لحصون آل جلال"
                     className="w-full p-2 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-sky-500 outline-none"
                   />
                 </div>
@@ -647,7 +702,7 @@ export const ManagerNotificationDrawer: React.FC<ManagerNotificationDrawerProps>
                   disabled={isSendingDir}
                   className="w-full py-2.5 bg-sky-700 hover:bg-sky-800 text-white rounded-lg font-bold flex items-center justify-center gap-1.5 disabled:opacity-60"
                 >
-                  <Send className="w-4 h-4" />
+                  {isSendingDir ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                   <span>{isSendingDir ? 'جاري الإرسال...' : 'إرسال التوجيه فوراً للسائق'}</span>
                 </button>
               </form>

@@ -20,7 +20,7 @@ import {
 import { useApp } from '../../context/AppContext';
 
 export const ReportsCenter: React.FC = () => {
-  const { orders, customers, trips, invoices, expenses, settings, truck, gpsEvents } = useApp();
+  const { orders, customers, trips, invoices, expenses, settings, truck, gpsEvents, allDistricts } = useApp();
 
   const [activeReportId, setActiveReportId] = useState<number>(1);
   const [dateFilter, setDateFilter] = useState('2026-11-11');
@@ -38,9 +38,9 @@ export const ReportsCenter: React.FC = () => {
     { id: 10, title: 'تقرير الأرباح والخسائر P&L', desc: 'قائمة الدخل: الإيرادات ناقص تكاليف الإنتاج والنقل' },
     { id: 11, title: 'تقرير أداء السائق والوايت', desc: 'كفاءة التسليم والالتزام بالوقت والتحصيل' },
     { id: 12, title: 'تقرير حركة الوايت وتتبع GPS', desc: 'سجل أحداث الحركة والتوقفات والمسار الفعلي عبر GPS' },
-    { id: 13, title: 'تقرير تكلفة التوصيل للمنزل', desc: 'متوسط تكلفة النقل لكل منزل في أحياء مأرب' },
+    { id: 13, title: 'تقرير تكلفة التوصيل للمنزل', desc: 'متوسط تكلفة النقل لكل منزل في مديرية الوادي ومأرب' },
     { id: 14, title: 'تقرير استغلال حمولة الوايت (6000L)', desc: 'نسبة استغلال سعة الصهريج لكل دورة توزيع' },
-    { id: 15, title: 'تقرير أداء المناطق والأحياء', desc: 'حجم الطلبات واللترات في الروضة، الشركة، المجمع، إلخ' },
+    { id: 15, title: 'تقرير أداء المناطق والأحياء', desc: 'حجم الطلبات واللترات في حصون آل جلال وامتداد مديرية الوادي' },
   ];
 
   // Helper to trigger real CSV download
@@ -303,7 +303,7 @@ export const ReportsCenter: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {['حي الروضة', 'حي الشركة', 'المجمع الحكومي', 'حي السلام', 'حي المطار', 'حي الفاو', 'الخسيف', 'حصون آل جلال', 'جو النسيم'].map((dist) => {
+                {allDistricts.map((dist) => {
                   const distCusts = customers.filter((c) => c.district === dist);
                   const totalOrders = distCusts.reduce((sum, c) => sum + c.totalOrdersCount, 0);
                   const totalLiters = distCusts.reduce((sum, c) => sum + c.totalLitersDelivered, 0);

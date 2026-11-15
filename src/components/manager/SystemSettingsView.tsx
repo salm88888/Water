@@ -4,7 +4,7 @@
  * Miyahna - System Settings, Cost Parameters & Production Reset
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Settings,
   DollarSign,
@@ -19,6 +19,7 @@ import {
   KeyRound,
   ShieldCheck,
   Crosshair,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { LocationPickerMapModal } from '../common/LocationPickerMapModal';
@@ -31,6 +32,10 @@ export const SystemSettingsView: React.FC = () => {
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [isPlantMapOpen, setIsPlantMapOpen] = useState(false);
   const [gpsLoading, setGpsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
+  const saveLockRef = useRef(false);
+  const clearLockRef = useRef(false);
 
   useEffect(() => {
     setForm({ ...settings });
@@ -38,24 +43,32 @@ export const SystemSettingsView: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    await updateSettings({
-      waterProductionCostPerLiter: Number(form.waterProductionCostPerLiter),
-      defaultSellingPricePerLiter: Number(form.defaultSellingPricePerLiter),
-      dieselPricePerLiter: Number(form.dieselPricePerLiter),
-      truckDieselConsumptionPerKm: Number(form.truckDieselConsumptionPerKm),
-      maintenanceAllowancePerTrip: Number(form.maintenanceAllowancePerTrip),
-      driverWagePerTrip: Number(form.driverWagePerTrip),
-      stopDetectionMinutes: Number(form.stopDetectionMinutes),
-      minMovementSpeedKmH: Number(form.minMovementSpeedKmH),
-      stopRadiusMeters: Number(form.stopRadiusMeters),
-      plantGeofenceMeters: Number(form.plantGeofenceMeters),
-      gpsSampleIntervalSeconds: Number(form.gpsSampleIntervalSeconds),
-      gpsWeakAccuracyMeters: Number(form.gpsWeakAccuracyMeters),
-      gpsGapSeconds: Number(form.gpsGapSeconds),
-      plantLocation: form.plantLocation,
-    });
-    setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 3000);
+    if (saveLockRef.current || isSaving) return;
+    saveLockRef.current = true;
+    setIsSaving(true);
+    try {
+      await updateSettings({
+        waterProductionCostPerLiter: Number(form.waterProductionCostPerLiter),
+        defaultSellingPricePerLiter: Number(form.defaultSellingPricePerLiter),
+        dieselPricePerLiter: Number(form.dieselPricePerLiter),
+        truckDieselConsumptionPerKm: Number(form.truckDieselConsumptionPerKm),
+        maintenanceAllowancePerTrip: Number(form.maintenanceAllowancePerTrip),
+        driverWagePerTrip: Number(form.driverWagePerTrip),
+        stopDetectionMinutes: Number(form.stopDetectionMinutes),
+        minMovementSpeedKmH: Number(form.minMovementSpeedKmH),
+        stopRadiusMeters: Number(form.stopRadiusMeters),
+        plantGeofenceMeters: Number(form.plantGeofenceMeters),
+        gpsSampleIntervalSeconds: Number(form.gpsSampleIntervalSeconds),
+        gpsWeakAccuracyMeters: Number(form.gpsWeakAccuracyMeters),
+        gpsGapSeconds: Number(form.gpsGapSeconds),
+        plantLocation: form.plantLocation,
+      });
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } finally {
+      saveLockRef.current = false;
+      setIsSaving(false);
+    }
   };
 
   const handleCapturePlantGps = () => {
@@ -418,10 +431,11 @@ export const SystemSettingsView: React.FC = () => {
         <div className="flex items-center justify-end">
           <button
             type="submit"
-            className="px-6 py-2.5 bg-sky-700 text-white rounded-lg text-xs font-bold hover:bg-sky-800 transition-colors shadow-sm flex items-center gap-2"
+            disabled={isSaving}
+            className="px-6 py-2.5 bg-sky-700 text-white rounded-lg text-xs font-bold hover:bg-sky-800 transition-colors shadow-sm flex items-center gap-2 disabled:opacity-60 cursor-pointer"
           >
-            <Save className="w-4 h-4" />
-            <span>حفظ وتطبيق كافة الإعدادات</span>
+            {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            <span>{isSaving ? 'جاري حفظ الإعدادات...' : 'حفظ وتطبيق كافة الإعدادات'}</span>
           </button>
         </div>
       </form>
@@ -463,19 +477,32 @@ export const SystemSettingsView: React.FC = () => {
             </div>
             <div className="flex gap-2 pt-2">
               <button
+                type="button"
+                disabled={isClearing}
                 onClick={() => setShowClearConfirm(false)}
-                className="flex-1 py-2 border border-slate-200 rounded-lg font-medium text-slate-700 hover:bg-slate-50"
+                className="flex-1 py-2 border border-slate-200 rounded-lg font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
                 تراجع
               </button>
               <button
+                type="button"
+                disabled={isClearing}
                 onClick={async () => {
-                  await clearDemoData();
-                  setShowClearConfirm(false);
+                  if (clearLockRef.current || isClearing) return;
+                  clearLockRef.current = true;
+                  setIsClearing(true);
+                  try {
+                    await clearDemoData();
+                    setShowClearConfirm(false);
+                  } finally {
+                    clearLockRef.current = false;
+                    setIsClearing(false);
+                  }
                 }}
-                className="flex-1 py-2 bg-rose-600 text-white rounded-lg font-bold hover:bg-rose-700"
+                className="flex-1 py-2 bg-rose-600 text-white rounded-lg font-bold hover:bg-rose-700 flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
               >
-                تأكيد التصفير
+                {isClearing && <Loader2 className="w-4 h-4 animate-spin" />}
+                <span>{isClearing ? 'جاري التصفير...' : 'تأكيد التصفير'}</span>
               </button>
             </div>
           </div>
@@ -490,14 +517,14 @@ export const SystemSettingsView: React.FC = () => {
         customerName={form.plantLocation.name}
         initialLat={form.plantLocation.lat}
         initialLng={form.plantLocation.lng}
+        initialDistrict={form.plantLocation.city}
         existingCustomers={customers}
         settings={settings}
-        onSelectLocation={async ({ lat, lng, district }) => {
+        onSelectLocation={async ({ lat, lng }) => {
           const updatedPlant = {
             ...form.plantLocation,
             lat,
             lng,
-            city: district ? `مأرب - ${district}` : form.plantLocation.city,
           };
           setForm((prev) => ({ ...prev, plantLocation: updatedPlant }));
           await updateSettings({ plantLocation: updatedPlant });

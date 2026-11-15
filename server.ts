@@ -13,6 +13,20 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
+import { AuthRequest, requireAuth } from './src/middleware/auth.ts';
+import { getOrCreateUser } from './src/db/users.ts';
+import {
+  deleteCustomerSql,
+  getCustomersSql,
+  getDistrictsSql,
+  getOrdersSql,
+  getTripsSql,
+  loadFullStateFromSql,
+  syncFullStateToSql,
+  upsertCustomerSql,
+  upsertDistrictSql,
+  upsertOrderSql,
+} from './src/db/repository.ts';
 import {
   DEFAULT_SETTINGS,
   INITIAL_CUSTOMERS,
@@ -26,7 +40,13 @@ import {
   INITIAL_TRUCK,
 } from './src/lib/marib-data.ts';
 import { generateSmartClusters } from './src/lib/clustering.ts';
-import { analyzeGpsTrack, haversineDistanceMeters } from './src/lib/gps-tracker.ts';
+import {
+  analyzeGpsTrack,
+  evaluatePlantDepartureTrigger,
+  evaluateTripCompletionReadiness,
+  haversineDistanceMeters,
+} from './src/lib/gps-tracker.ts';
+import { AL_WADI_DISTRICT_NAMES, DEFAULT_AL_WADI_DISTRICT } from './src/lib/alwadi-districts.ts';
 import {
   AppNotification,
   Customer,
@@ -158,6 +178,9 @@ function migrateDatabase(raw: any): { migrated: DatabaseSchema; changed: boolean
       Number(rawSettings.gpsWeakAccuracyMeters) || DEFAULT_SETTINGS.gpsWeakAccuracyMeters,
     gpsGapSeconds: Number(rawSettings.gpsGapSeconds) || DEFAULT_SETTINGS.gpsGapSeconds,
     plantLocation: rawSettings.plantLocation || DEFAULT_SETTINGS.plantLocation,
+    customDistricts: Array.isArray(rawSettings.customDistricts)
+      ? rawSettings.customDistricts.filter((d: any) => typeof d === 'string' && d.trim().length > 0)
+      : [],
     demoDataActive: false,
     demoDataClearedAt: rawSettings.demoDataClearedAt || undefined,
     demoResetVersion: Number(rawSettings.demoResetVersion) || 1,
@@ -577,6 +600,120 @@ export async function createAppServer() {
 
   const router = express.Router();
 
+  // Short-TTL idempotency & double-click deduplication cache (prevents duplicate execution from rapid double clicks)
+  const processedClientRequests = new Map<string, { timestamp: number; response: any }>();
+  const getIdempotentResponse = (reqId?: unknown) => {
+    if (typeof reqId !== 'string' || !reqId.trim()) return null;
+    const key = reqId.trim();
+    const cached = processedClientRequests.get(key);
+    if (!cached) return null;
+    if (Date.now() - cached.timestamp > 5 * 60 * 1000) {
+      processedClientRequests.delete(key);
+      return null;
+    }
+    return { ...cached.response, deduplicated: true };
+  };
+  const saveIdempotentResponse = (reqId: unknown, response: any) => {
+    if (typeof reqId !== 'string' || !reqId.trim()) return;
+    if (processedClientRequests.size > 500) {
+      const cutoff = Date.now() - 5 * 60 * 1000;
+      for (const [k, v] of processedClientRequests.entries()) {
+        if (v.timestamp < cutoff) processedClientRequests.delete(k);
+      }
+    }
+    processedClientRequests.set(reqId.trim(), { timestamp: Date.now(), response });
+  };
+
+  const registerCustomDistrict = (rawName?: unknown): string => {
+    const clean = typeof rawName === 'string' ? rawName.trim() : '';
+    if (!clean || clean === '__other__' || clean === 'أخرى') return '';
+    if (!Array.isArray(db.settings.customDistricts)) {
+      db.settings.customDistricts = [];
+    }
+    if (!AL_WADI_DISTRICT_NAMES.includes(clean) && !db.settings.customDistricts.includes(clean)) {
+      db.settings.customDistricts.push(clean);
+    }
+    return clean;
+  };
+
+  const ensureCustomerRecord = (
+    payload: any,
+    actorRole: 'driver' | 'manager',
+    actorName: string
+  ): { customer: Customer; created: boolean; district: string } => {
+    const cleanDistrict = registerCustomDistrict(payload.district) || DEFAULT_AL_WADI_DISTRICT;
+    const cleanName = String(payload.customerName || payload.name || '').trim();
+    const cleanPhone = String(payload.phone || '').trim();
+    const requestedCustId = typeof payload.customerId === 'string' ? payload.customerId.trim() : '';
+
+    const isSentinelId =
+      !requestedCustId ||
+      requestedCustId === 'cust-manual' ||
+      requestedCustId === 'cust-offline' ||
+      requestedCustId === '__new__';
+
+    if (!isSentinelId) {
+      const existingById = db.customers.find((c) => c.id === requestedCustId);
+      if (existingById) {
+        const samePhone = !cleanPhone || existingById.phone.trim() === cleanPhone;
+        const sameName = !cleanName || existingById.name.trim() === cleanName;
+        if (samePhone && sameName) {
+          return { customer: existingById, created: false, district: cleanDistrict };
+        }
+      }
+    }
+
+    const matchedExisting = db.customers.find((c) => {
+      const phoneMatch = cleanPhone && c.phone.trim() === cleanPhone;
+      const nameMatch = cleanName && c.name.trim() === cleanName;
+      if (cleanName && cleanPhone) return phoneMatch && nameMatch;
+      if (cleanPhone && !cleanName) return phoneMatch;
+      return false;
+    });
+
+    if (matchedExisting) {
+      return { customer: matchedExisting, created: false, district: cleanDistrict };
+    }
+
+    const newSeq = db.customers.length + 1;
+    const newCust: Customer = {
+      id: payload.newCustomerId || `cust-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      customerId: `CUST-${String(newSeq).padStart(4, '0')}`,
+      name: cleanName || cleanPhone || 'عميل جديد',
+      phone: cleanPhone,
+      altPhone: String(payload.altPhone || '').trim(),
+      district: cleanDistrict,
+      addressDetails: String(payload.addressDetails || '').trim(),
+      lat: Number(payload.lat) || db.settings.plantLocation.lat + 0.005,
+      lng: Number(payload.lng) || db.settings.plantLocation.lng + 0.005,
+      tankCapacityLiters: Number(payload.tankCapacity || payload.tankCapacityLiters) || 2000,
+      tankRemainingLiters: payload.tankRemainingLiters !== undefined ? Number(payload.tankRemainingLiters) : 0,
+      notes: String(payload.notes || '').trim(),
+      createdAt: payload.createdAt || new Date().toISOString(),
+      isActive: true,
+      totalOrdersCount: 0,
+      totalLitersDelivered: 0,
+      isOfflineCreated: Boolean(payload.isOfflineCreated),
+    };
+    db.customers.unshift(newCust);
+
+    pushNotification({
+      targetRole: 'manager',
+      actorRole,
+      actorName: actorName || (actorRole === 'driver' ? db.truck.driverName : 'الإدارة'),
+      category: 'customer_added',
+      priority: 'info',
+      title:
+        actorRole === 'driver'
+          ? `تم حفظ زبون جديد تلقائياً من طلب السائق: ${newCust.name}`
+          : `تم حفظ زبون جديد تلقائياً من الطلب: ${newCust.name}`,
+      message: `${newCust.district} · الهاتف: ${newCust.phone || 'غير مسجل'}`,
+      actionTab: 'customers',
+    });
+
+    return { customer: newCust, created: true, district: cleanDistrict };
+  };
+
   // 1. Full State (includes notifications, directives, and live presence)
   router.get('/state', (_req: Request, res: Response) => {
     res.json({
@@ -588,32 +725,76 @@ export async function createAppServer() {
     });
   });
 
+  // 1B. Custom Districts Registry (Al-Wadi District, Marib)
+  router.post('/districts', (req: Request, res: Response) => {
+    const clean = registerCustomDistrict(req.body?.name);
+    if (!clean) {
+      return res.status(400).json({ success: false, error: 'يرجى كتابة اسم المنطقة أو الحي بشكل صحيح' });
+    }
+    saveDatabase();
+    broadcastWs({ type: 'state:updated', reason: 'district:created' });
+    res.json({ success: true, name: clean, data: db.settings.customDistricts || [] });
+  });
+
   // 2. Customers
   router.get('/customers', (_req: Request, res: Response) => {
     res.json({ success: true, data: db.customers });
   });
 
   router.post('/customers', (req: Request, res: Response) => {
-    const payload = req.body;
+    const payload = req.body || {};
+    const cached = getIdempotentResponse(payload.clientRequestId);
+    if (cached) return res.json(cached);
+
     if (payload.id && db.customers.some((c) => c.id === payload.id)) {
       const existing = db.customers.find((c) => c.id === payload.id);
-      return res.json({ success: true, data: existing, deduplicated: true });
+      return res.json({
+        success: true,
+        data: existing,
+        customDistricts: db.settings.customDistricts || [],
+        deduplicated: true,
+      });
     }
+
+    const cleanName = String(payload.name || '').trim();
+    const cleanPhone = String(payload.phone || '').trim();
+    if (!cleanName || !cleanPhone) {
+      return res.status(400).json({ success: false, error: 'يرجى إدخال اسم العميل ورقم الهاتف' });
+    }
+
+    // Prevent double-click duplicate customer creation within 10 seconds
+    const tenSecAgo = Date.now() - 10 * 1000;
+    const rapidDup = db.customers.find(
+      (c) =>
+        c.name.trim() === cleanName &&
+        c.phone.trim() === cleanPhone &&
+        new Date(c.createdAt).getTime() > tenSecAgo
+    );
+    if (rapidDup) {
+      return res.json({
+        success: true,
+        data: rapidDup,
+        customDistricts: db.settings.customDistricts || [],
+        deduplicated: true,
+      });
+    }
+
+    const cleanDistrict = registerCustomDistrict(payload.district) || DEFAULT_AL_WADI_DISTRICT;
     const newSeq = db.customers.length + 1;
     const customerId = `CUST-${String(newSeq).padStart(4, '0')}`;
     const newCustomer: Customer = {
       id: payload.id || `cust-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       customerId,
-      name: payload.name,
-      phone: payload.phone,
-      altPhone: payload.altPhone || '',
-      district: payload.district || 'حي الروضة',
-      addressDetails: payload.addressDetails || '',
+      name: cleanName,
+      phone: cleanPhone,
+      altPhone: String(payload.altPhone || '').trim(),
+      district: cleanDistrict,
+      addressDetails: String(payload.addressDetails || '').trim(),
       lat: Number(payload.lat) || db.settings.plantLocation.lat + 0.005,
       lng: Number(payload.lng) || db.settings.plantLocation.lng + 0.005,
       tankCapacityLiters: Number(payload.tankCapacityLiters) || 2000,
       tankRemainingLiters: payload.tankRemainingLiters !== undefined ? Number(payload.tankRemainingLiters) : 0,
-      notes: payload.notes || '',
+      notes: String(payload.notes || '').trim(),
       createdAt: payload.createdAt || new Date().toISOString(),
       isActive: true,
       totalOrdersCount: 0,
@@ -632,7 +813,9 @@ export async function createAppServer() {
       actionTab: 'customers',
     });
     saveDatabase();
-    res.json({ success: true, data: newCustomer });
+    const resp = { success: true, data: newCustomer, customDistricts: db.settings.customDistricts || [] };
+    saveIdempotentResponse(payload.clientRequestId, resp);
+    res.json(resp);
   });
 
   router.put('/customers/:id', (req: Request, res: Response) => {
@@ -641,10 +824,45 @@ export async function createAppServer() {
     if (idx === -1) {
       return res.status(404).json({ success: false, error: 'العميل غير موجود' });
     }
-    db.customers[idx] = { ...db.customers[idx], ...req.body };
+    const {
+      id: _ignoreId,
+      customerId: _ignoreCode,
+      clientRequestId: _ignoreReqId,
+      ...incoming
+    } = req.body || {};
+
+    const cleanDistrict =
+      incoming.district !== undefined
+        ? registerCustomDistrict(incoming.district) || db.customers[idx].district || DEFAULT_AL_WADI_DISTRICT
+        : db.customers[idx].district;
+
+    db.customers[idx] = {
+      ...db.customers[idx],
+      ...incoming,
+      name: incoming.name !== undefined ? String(incoming.name).trim() || db.customers[idx].name : db.customers[idx].name,
+      phone: incoming.phone !== undefined ? String(incoming.phone).trim() : db.customers[idx].phone,
+      district: cleanDistrict,
+    };
     broadcastWs({ type: 'state:updated', reason: 'customer:updated' });
     saveDatabase();
-    res.json({ success: true, data: db.customers[idx] });
+    res.json({ success: true, data: db.customers[idx], customDistricts: db.settings.customDistricts || [] });
+  });
+
+  router.delete('/customers/:id', (req: Request, res: Response) => {
+    const { id } = req.params;
+    const idx = db.customers.findIndex((c) => c.id === id);
+    if (idx === -1) {
+      return res.status(404).json({ success: false, error: 'العميل غير موجود' });
+    }
+    const [removed] = db.customers.splice(idx, 1);
+    for (const o of db.orders) {
+      if (o.customerId === id) {
+        o.customerId = '';
+      }
+    }
+    broadcastWs({ type: 'state:updated', reason: 'customer:deleted' });
+    saveDatabase();
+    res.json({ success: true, deletedId: removed.id });
   });
 
   // 3. Orders & Duplicate Detection
@@ -653,20 +871,56 @@ export async function createAppServer() {
   });
 
   router.post('/orders', (req: Request, res: Response) => {
-    const payload = req.body;
+    const payload = req.body || {};
+    const cached = getIdempotentResponse(payload.clientRequestId);
+    if (cached) return res.json(cached);
+
     if (payload.id && db.orders.some((o) => o.id === payload.id)) {
       const existing = db.orders.find((o) => o.id === payload.id);
-      return res.json({ success: true, data: existing, deduplicated: true });
+      return res.json({
+        success: true,
+        data: existing,
+        customDistricts: db.settings.customDistricts || [],
+        deduplicated: true,
+      });
     }
 
-    const phone = payload.phone?.trim();
-    const customerId = payload.customerId;
+    const phone = String(payload.phone || '').trim();
+    const cleanName = String(payload.customerName || '').trim();
     const requestedLiters = Number(payload.requestedLiters);
+    if (!cleanName || !phone || !Number.isFinite(requestedLiters) || requestedLiters <= 0) {
+      return res.status(400).json({ success: false, error: 'يرجى إدخال اسم العميل ورقم الهاتف والكمية المطلوبة' });
+    }
+
+    // Prevent rapid double-click duplicate orders (within 8 seconds with exact same customer + phone + liters)
+    const eightSecAgo = Date.now() - 8 * 1000;
+    const rapidExact = db.orders.find(
+      (o) =>
+        o.phone.trim() === phone &&
+        o.customerName.trim() === cleanName &&
+        Number(o.requestedLiters) === requestedLiters &&
+        new Date(o.createdAt).getTime() > eightSecAgo
+    );
+    if (rapidExact) {
+      return res.json({
+        success: true,
+        data: rapidExact,
+        customDistricts: db.settings.customDistricts || [],
+        deduplicated: true,
+      });
+    }
+
+    const isDriverOrder = payload.source === 'driver_manual';
+    const ensured = ensureCustomerRecord(
+      payload,
+      isDriverOrder ? 'driver' : 'manager',
+      payload.actorName || (isDriverOrder ? db.truck.driverName : 'المدير العام')
+    );
 
     const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
     const duplicate = db.orders.find(
       (o) =>
-        (o.phone === phone || (customerId && o.customerId === customerId)) &&
+        (o.phone === phone || (ensured.customer.id && o.customerId === ensured.customer.id)) &&
         new Date(o.createdAt).getTime() > oneDayAgo &&
         o.status !== 'delivered' &&
         o.status !== 'cancelled'
@@ -680,11 +934,11 @@ export async function createAppServer() {
     const newOrder: Order = {
       id: payload.id || `ord-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       orderNumber,
-      customerId: payload.customerId || 'cust-manual',
-      customerName: payload.customerName,
-      phone: payload.phone,
-      district: payload.district || 'حي الروضة',
-      addressDetails: payload.addressDetails || '',
+      customerId: ensured.customer.id,
+      customerName: cleanName,
+      phone,
+      district: ensured.district,
+      addressDetails: String(payload.addressDetails || '').trim(),
       lat: Number(payload.lat) || db.settings.plantLocation.lat + 0.005,
       lng: Number(payload.lng) || db.settings.plantLocation.lng + 0.005,
       tankCapacity: Number(payload.tankCapacity) || 2000,
@@ -703,7 +957,7 @@ export async function createAppServer() {
 
     db.orders.unshift(newOrder);
 
-    const custIdx = db.customers.findIndex((c) => c.id === payload.customerId);
+    const custIdx = db.customers.findIndex((c) => c.id === ensured.customer.id);
     if (custIdx !== -1 && payload.tankRemainingLiters !== undefined) {
       db.customers[custIdx].tankRemainingLiters = Number(payload.tankRemainingLiters);
     }
@@ -737,12 +991,16 @@ export async function createAppServer() {
     }
 
     saveDatabase();
-    res.json({
+    const resp = {
       success: true,
       data: newOrder,
+      createdCustomer: ensured.created ? ensured.customer : undefined,
+      customDistricts: db.settings.customDistricts || [],
       duplicateDetected: Boolean(duplicate),
       warning: duplicate ? `تنبيه: يوجد طلب سابق لهذا العميل (${duplicate.orderNumber}) في انتظار التوصيل!` : null,
-    });
+    };
+    saveIdempotentResponse(payload.clientRequestId, resp);
+    res.json(resp);
   });
 
   router.put('/orders/:id', (req: Request, res: Response) => {
@@ -751,10 +1009,13 @@ export async function createAppServer() {
     if (idx === -1) {
       return res.status(404).json({ success: false, error: 'الطلب غير موجود' });
     }
+    if (req.body?.district) {
+      registerCustomDistrict(req.body.district);
+    }
     db.orders[idx] = { ...db.orders[idx], ...req.body };
     broadcastWs({ type: 'state:updated', reason: 'order:updated' });
     saveDatabase();
-    res.json({ success: true, data: db.orders[idx] });
+    res.json({ success: true, data: db.orders[idx], customDistricts: db.settings.customDistricts || [] });
   });
 
   // 4. Clustering & Optimization
@@ -764,9 +1025,31 @@ export async function createAppServer() {
   });
 
   router.post('/clustering/create-trip', (req: Request, res: Response) => {
-    const { proposal, managerName } = req.body;
+    const { proposal, managerName, clientRequestId } = req.body || {};
+    const cached = getIdempotentResponse(clientRequestId);
+    if (cached) return res.json(cached);
+
     if (!proposal || !proposal.orders || proposal.orders.length === 0) {
       return res.status(400).json({ success: false, error: 'بيانات مقترح الرحلة غير صحيحة' });
+    }
+
+    const incomingSig = proposal.orders.map((o: Order) => o.id).sort().join(',');
+    const tenSecAgo = Date.now() - 10 * 1000;
+    const rapidTrip = db.trips.find(
+      (t) =>
+        new Date(t.proposedAt).getTime() > tenSecAgo &&
+        [...(t.orderIds || [])].sort().join(',') === incomingSig
+    );
+    if (rapidTrip) {
+      return res.json({ success: true, data: rapidTrip, deduplicated: true });
+    }
+
+    const activeOther = db.trips.find((t) => t.status === 'in_progress');
+    if (activeOther) {
+      return res.status(400).json({
+        success: false,
+        error: `توجد رحلة جارية قيد التتبع حالياً (${activeOther.tripNumber}) — أوقف التتبع عنها أولاً قبل اعتماد رحلة جديدة.`,
+      });
     }
 
     const tripSeq = db.trips.length + 1;
@@ -774,6 +1057,8 @@ export async function createAppServer() {
     const orderIds = proposal.orders.map((o: Order) => o.id);
     const nowIso = new Date().toISOString();
     const approver = (typeof managerName === 'string' && managerName.trim()) || 'المدير العام';
+    const startLat = db.settings.plantLocation.lat;
+    const startLng = db.settings.plantLocation.lng;
 
     const newTrip: Trip = {
       id: `trip-${Date.now()}`,
@@ -786,16 +1071,19 @@ export async function createAppServer() {
       initialLoadLiters: proposal.totalLiters,
       deliveredLiters: 0,
       remainingLiters: proposal.totalLiters,
-      status: 'approved',
+      status: 'in_progress',
       syncStatus: 'synced',
       createdByRole: 'manager',
-      driverAcceptanceStatus: 'pending',
+      driverAcceptanceStatus: 'accepted',
+      driverRespondedAt: nowIso,
       customerStops: proposal.customerStops,
       orderIds,
       proposedAt: nowIso,
       submittedAt: nowIso,
       approvedAt: nowIso,
       approvedBy: approver,
+      startedAt: nowIso,
+      startLocation: { lat: startLat, lng: startLng },
       gpsPoints: [],
       detectedStops: [],
       gpsGaps: [],
@@ -805,8 +1093,8 @@ export async function createAppServer() {
           timestamp: nowIso,
           actorRole: 'manager',
           actorName: approver,
-          action: 'اعتماد وتكليف طلب رحلة من اقتراح المدير',
-          details: `${proposal.customerStops.length} وجهات بإجمالي ${proposal.totalLiters.toLocaleString()} لتر — بانتظار موافقة السائق`,
+          action: 'اعتماد الرحلة وتفعيل التتبع التلقائي من المدير',
+          details: `${proposal.customerStops.length} وجهات بإجمالي ${proposal.totalLiters.toLocaleString()} لتر — بدأ تتبع GPS تلقائياً`,
         },
       ],
       modificationRequests: [],
@@ -829,16 +1117,30 @@ export async function createAppServer() {
     for (const ordId of orderIds) {
       const idx = db.orders.findIndex((o) => o.id === ordId);
       if (idx !== -1) {
-        db.orders[idx].status = 'approved';
+        db.orders[idx].status = 'in_delivery';
         db.orders[idx].tripId = newTrip.id;
       }
     }
 
-    if (db.truck.status !== 'on_trip') {
-      db.truck.status = 'loading';
-      db.truck.currentWaterLiters = proposal.totalLiters;
-      db.truck.currentTripId = newTrip.id;
-    }
+    db.truck.status = 'on_trip';
+    db.truck.currentWaterLiters = proposal.totalLiters;
+    db.truck.currentTripId = newTrip.id;
+    db.truck.lastEvent = 'START';
+    db.truck.lastUpdateTimestamp = nowIso;
+
+    db.gpsEvents.push({
+      id: `gps-start-${Date.now()}`,
+      tripId: newTrip.id,
+      tripNumber: newTrip.tripNumber,
+      timestamp: nowIso,
+      eventType: 'START',
+      lat: startLat,
+      lng: startLng,
+      speed: 0,
+      source: 'gps_auto',
+      sequenceNumber: db.gpsEvents.length + 1,
+      isProcessed: true,
+    });
 
     db.trips.unshift(newTrip);
     notifyAndBroadcast('trip:approved', {
@@ -847,13 +1149,15 @@ export async function createAppServer() {
       actorName: approver,
       category: 'trip_approved',
       priority: 'urgent',
-      title: `طلب رحلة جديد من المدير (${newTrip.tripNumber})`,
-      message: `${proposal.customerStops.length} وجهات بإجمالي ${proposal.totalLiters.toLocaleString()} لتر — يرجى الموافقة على الرحلة أو الرد بكتابة السبب`,
+      title: `تم اعتماد الرحلة وبدأ التتبع (${newTrip.tripNumber})`,
+      message: `${proposal.customerStops.length} وجهات — التتبع الجغرافي GPS نشط الآن وسيقف عند العودة لنقطة الانطلاق أو بإيقاف المدير`,
       tripId: newTrip.id,
       tripNumber: newTrip.tripNumber,
     });
     saveDatabase();
-    res.json({ success: true, data: newTrip });
+    const resp = { success: true, data: newTrip };
+    saveIdempotentResponse(clientRequestId, resp);
+    res.json(resp);
   });
 
   // 5. Driver Trip Planner & Mandatory Manager Approval Workflow
@@ -863,7 +1167,10 @@ export async function createAppServer() {
 
   // Create Trip Plan (Manager ONLY — Drivers submit orders & customers only)
   router.post('/trips', (req: Request, res: Response) => {
-    const payload = req.body;
+    const payload = req.body || {};
+    const cached = getIdempotentResponse(payload.clientRequestId);
+    if (cached) return res.json(cached);
+
     if (payload.createdByRole !== 'manager') {
       return res.status(403).json({
         success: false,
@@ -882,8 +1189,18 @@ export async function createAppServer() {
     }
 
     const isManagerApproved = Boolean(payload.approveImmediately);
+    if (isManagerApproved) {
+      const activeOther = db.trips.find((t) => t.status === 'in_progress');
+      if (activeOther) {
+        return res.status(400).json({
+          success: false,
+          error: `توجد رحلة جارية قيد التتبع حالياً (${activeOther.tripNumber}) — أوقف التتبع عنها أولاً قبل اعتماد رحلة جديدة.`,
+        });
+      }
+    }
+
     const requestedStatus: TripStatus = isManagerApproved
-      ? 'approved'
+      ? 'in_progress'
       : payload.status === 'pending_approval'
       ? 'pending_approval'
       : 'draft';
@@ -898,6 +1215,8 @@ export async function createAppServer() {
     const tripNumber = payload.tripNumber || `TRIP-2026-${String(tripSeq).padStart(4, '0')}`;
     const actorName = payload.actorName || 'المدير العام';
     const nowIso = new Date().toISOString();
+    const startLat = db.settings.plantLocation.lat;
+    const startLng = db.settings.plantLocation.lng;
 
     const totalLiters = stops.reduce((s, st) => s + (Number(st.requestedLiters) || 0), 0);
     const estDistKm = Number(payload.estimatedDistanceKm) || Math.max(4, stops.length * 3.5);
@@ -917,13 +1236,16 @@ export async function createAppServer() {
       status: requestedStatus,
       syncStatus: 'synced',
       createdByRole: 'manager',
-      driverAcceptanceStatus: 'pending',
+      driverAcceptanceStatus: isManagerApproved ? 'accepted' : 'pending',
+      driverRespondedAt: isManagerApproved ? nowIso : undefined,
       customerStops: stops.map((s, idx) => ({ ...s, stopSequence: idx + 1 })),
       orderIds: stops.map((s) => s.orderId).filter(Boolean),
       proposedAt: payload.proposedAt || nowIso,
       submittedAt: requestedStatus !== 'draft' ? nowIso : undefined,
       approvedAt: isManagerApproved ? nowIso : undefined,
       approvedBy: isManagerApproved ? actorName : undefined,
+      startedAt: isManagerApproved ? nowIso : undefined,
+      startLocation: isManagerApproved ? { lat: startLat, lng: startLng } : undefined,
       gpsPoints: [],
       detectedStops: [],
       gpsGaps: [],
@@ -934,7 +1256,7 @@ export async function createAppServer() {
           actorRole: 'manager',
           actorName,
           action: isManagerApproved
-            ? 'إنشاء واعتماد مخطط رحلة من المدير'
+            ? 'اعتماد الرحلة وتفعيل التتبع التلقائي من المدير'
             : 'إنشاء مسودة مخطط رحلة من المدير',
           details: `السائق المكلف: ${assignedDriverName} · ${stops.length} وجهات بإجمالي ${totalLiters.toLocaleString()} لتر`,
         },
@@ -962,27 +1284,42 @@ export async function createAppServer() {
     for (const ordId of newTrip.orderIds) {
       const o = db.orders.find((ord) => ord.id === ordId);
       if (o) {
-        o.status = isManagerApproved ? 'approved' : 'clustered';
+        o.status = isManagerApproved ? 'in_delivery' : 'clustered';
         o.tripId = newTrip.id;
       }
     }
 
-    if (isManagerApproved && db.truck.status !== 'on_trip') {
-      db.truck.status = 'loading';
+    if (isManagerApproved) {
+      db.truck.status = 'on_trip';
       db.truck.currentWaterLiters = totalLiters;
       db.truck.currentTripId = newTrip.id;
+      db.truck.lastEvent = 'START';
+      db.truck.lastUpdateTimestamp = nowIso;
+      db.gpsEvents.push({
+        id: `gps-start-${Date.now()}`,
+        tripId: newTrip.id,
+        tripNumber: newTrip.tripNumber,
+        timestamp: nowIso,
+        eventType: 'START',
+        lat: startLat,
+        lng: startLng,
+        speed: 0,
+        source: 'gps_auto',
+        sequenceNumber: db.gpsEvents.length + 1,
+        isProcessed: true,
+      });
     }
 
     db.trips.unshift(newTrip);
-    if (requestedStatus !== 'draft') {
+    if (isManagerApproved) {
       notifyAndBroadcast('trip:approved', {
         targetRole: 'driver',
         actorRole: 'manager',
         actorName,
         category: 'trip_approved',
         priority: 'urgent',
-        title: `طلب رحلة جديد من المدير (${newTrip.tripNumber})`,
-        message: `${stops.length} وجهات بإجمالي ${totalLiters.toLocaleString()} لتر — يرجى الموافقة أو الرد بكتابة السبب`,
+        title: `تم اعتماد الرحلة وبدأ التتبع (${newTrip.tripNumber})`,
+        message: `${stops.length} وجهات — التتبع الجغرافي GPS نشط الآن وسيقف تلقائياً عند العودة لنقطة الانطلاق أو بإيقاف المدير`,
         tripId: newTrip.id,
         tripNumber: newTrip.tripNumber,
       });
@@ -990,7 +1327,9 @@ export async function createAppServer() {
       broadcastWs({ type: 'state:updated', reason: 'trip:created' });
     }
     saveDatabase();
-    res.json({ success: true, data: newTrip });
+    const resp = { success: true, data: newTrip };
+    saveIdempotentResponse(payload.clientRequestId, resp);
+    res.json(resp);
   });
 
   // Manager edits trip plan BEFORE approval (when status is 'draft' or 'rejected')
@@ -1076,64 +1415,97 @@ export async function createAppServer() {
     res.json({ success: true, data: trip });
   });
 
-  // Manager explicitly approves trip -> 'approved'
+  // Manager explicitly approves trip -> immediately activates tracking ('in_progress')
   router.post('/trips/:id/approve', (req: Request, res: Response) => {
+    const cached = getIdempotentResponse(req.body?.clientRequestId);
+    if (cached) return res.json(cached);
+
     const trip = db.trips.find((t) => t.id === req.params.id);
     if (!trip) return res.status(404).json({ success: false, error: 'الرحلة غير موجودة' });
 
-    if (trip.status !== 'pending_approval' && trip.status !== 'draft' && trip.status !== 'approved') {
+    if (trip.status === 'in_progress') {
+      return res.json({ success: true, data: trip, deduplicated: true });
+    }
+
+    if (trip.status !== 'pending_approval' && trip.status !== 'draft' && trip.status !== 'approved' && trip.status !== 'rejected') {
       return res.status(400).json({ success: false, error: 'لا يمكن اعتماد رحلة في هذه الحالة' });
     }
 
+    const activeOther = db.trips.find((t) => t.status === 'in_progress' && t.id !== trip.id);
+    if (activeOther) {
+      return res.status(400).json({
+        success: false,
+        error: `توجد رحلة جارية قيد التتبع حالياً (${activeOther.tripNumber}) — أوقف التتبع عنها أولاً قبل اعتماد رحلة جديدة.`,
+      });
+    }
+
+    const nowIso = new Date().toISOString();
     const managerName = req.body?.managerName || 'المدير العام';
-    trip.status = 'approved';
-    trip.approvedAt = new Date().toISOString();
+    const startLat = db.settings.plantLocation.lat;
+    const startLng = db.settings.plantLocation.lng;
+
+    trip.status = 'in_progress';
+    trip.approvedAt = nowIso;
     trip.approvedBy = managerName;
+    trip.startedAt = trip.startedAt || nowIso;
+    trip.startLocation = trip.startLocation || { lat: startLat, lng: startLng };
     trip.rejectionReason = undefined;
     trip.returnedForEditReason = undefined;
-
-    if (trip.createdByRole === 'manager') {
-      trip.driverAcceptanceStatus = 'pending';
-      trip.driverRespondedAt = undefined;
-      trip.driverResponseReason = undefined;
-    } else {
-      trip.driverAcceptanceStatus = 'accepted';
-    }
+    trip.driverAcceptanceStatus = 'accepted';
+    trip.driverRespondedAt = nowIso;
+    trip.driverResponseReason = undefined;
 
     for (const ordId of trip.orderIds) {
       const o = db.orders.find((ord) => ord.id === ordId);
-      if (o) o.status = 'approved';
+      if (o) o.status = 'in_delivery';
     }
 
-    if (db.truck.status !== 'on_trip') {
-      db.truck.status = 'loading';
-      db.truck.currentWaterLiters = trip.initialLoadLiters;
-      db.truck.currentTripId = trip.id;
-    }
+    db.truck.status = 'on_trip';
+    db.truck.currentWaterLiters = trip.initialLoadLiters;
+    db.truck.currentTripId = trip.id;
+    db.truck.lastEvent = 'START';
+    db.truck.lastUpdateTimestamp = nowIso;
 
-    appendAudit(trip, 'manager', managerName, 'اعتماد مخطط الرحلة', req.body?.notes || 'تمت مراجعة الوجهات والكميات والموافقة');
+    db.gpsEvents.push({
+      id: `gps-start-${Date.now()}`,
+      tripId: trip.id,
+      tripNumber: trip.tripNumber,
+      timestamp: nowIso,
+      eventType: 'START',
+      lat: startLat,
+      lng: startLng,
+      speed: 0,
+      source: 'gps_auto',
+      sequenceNumber: db.gpsEvents.length + 1,
+      isProcessed: true,
+    });
 
-    const isManagerProposal = trip.createdByRole === 'manager';
+    appendAudit(
+      trip,
+      'manager',
+      managerName,
+      'اعتماد الرحلة وتفعيل التتبع التلقائي',
+      req.body?.notes || 'تم اعتماد الرحلة من المدير وبدء تتبع GPS تلقائياً'
+    );
+
     notifyAndBroadcast('trip:approved', {
       targetRole: 'driver',
       actorRole: 'manager',
       actorName: managerName,
       category: 'trip_approved',
       priority: 'urgent',
-      title: isManagerProposal
-        ? `طلب رحلة معتمد من المدير (${trip.tripNumber}) — بانتظار موافقتك`
-        : `تم اعتماد الرحلة ${trip.tripNumber} — يمكنك الانطلاق الآن`,
-      message: isManagerProposal
-        ? `${trip.customerStops.length} وجهات (${trip.initialLoadLiters.toLocaleString()} لتر) — يرجى الضغط على موافقة أو الرد بكتابة السبب${req.body?.notes ? ` (${req.body.notes})` : ''}`
-        : req.body?.notes
-        ? `ملاحظة المدير: ${req.body.notes}`
-        : `المسار معتمد لـ ${trip.customerStops.length} وجهات (${trip.initialLoadLiters.toLocaleString()} لتر)`,
+      title: `تم اعتماد الرحلة وبدأ التتبع (${trip.tripNumber})`,
+      message: req.body?.notes
+        ? `ملاحظة المدير: ${req.body.notes} — التتبع الجغرافي نشط الآن`
+        : `${trip.customerStops.length} وجهات — التتبع الجغرافي GPS نشط تلقائياً وسيقف عند العودة لنقطة الانطلاق أو بإيقاف المدير`,
       tripId: trip.id,
       tripNumber: trip.tripNumber,
     });
 
     saveDatabase();
-    res.json({ success: true, data: trip });
+    const resp = { success: true, data: trip };
+    saveIdempotentResponse(req.body?.clientRequestId, resp);
+    res.json(resp);
   });
 
   // Manager rejects trip -> 'rejected'
@@ -1196,6 +1568,9 @@ export async function createAppServer() {
 
   // Driver responds to a Manager-proposed trip request: accept OR reply/decline with written reason
   router.post('/trips/:id/driver-respond', (req: Request, res: Response) => {
+    const cached = getIdempotentResponse(req.body?.clientRequestId);
+    if (cached) return res.json(cached);
+
     const trip = db.trips.find((t) => t.id === req.params.id);
     if (!trip) return res.status(404).json({ success: false, error: 'الرحلة غير موجودة' });
 
@@ -1242,7 +1617,9 @@ export async function createAppServer() {
       });
 
       saveDatabase();
-      return res.json({ success: true, data: trip });
+      const resp = { success: true, data: trip };
+      saveIdempotentResponse(req.body?.clientRequestId, resp);
+      return res.json(resp);
     }
 
     // decision === 'accepted'
@@ -1274,11 +1651,16 @@ export async function createAppServer() {
     });
 
     saveDatabase();
-    res.json({ success: true, data: trip });
+    const resp = { success: true, data: trip };
+    saveIdempotentResponse(req.body?.clientRequestId, resp);
+    res.json(resp);
   });
 
   // Modification Requests on approved / in_progress trips
   router.post('/trips/:id/request-modification', (req: Request, res: Response) => {
+    const cached = getIdempotentResponse(req.body?.clientRequestId);
+    if (cached) return res.json(cached);
+
     const trip = db.trips.find((t) => t.id === req.params.id);
     if (!trip) return res.status(404).json({ success: false, error: 'الرحلة غير موجودة' });
 
@@ -1292,6 +1674,14 @@ export async function createAppServer() {
     const reason = (req.body.reason || '').trim();
     if (!reason) {
       return res.status(400).json({ success: false, error: 'يرجى كتابة سبب طلب التعديل' });
+    }
+
+    const tenSecAgo = Date.now() - 10 * 1000;
+    const recentDupMod = (trip.modificationRequests || []).find(
+      (m) => m.reason.trim() === reason && new Date(m.requestedAt).getTime() > tenSecAgo
+    );
+    if (recentDupMod) {
+      return res.json({ success: true, data: trip, request: recentDupMod, deduplicated: true });
     }
 
     const modReq: ModificationRequest = {
@@ -1323,7 +1713,9 @@ export async function createAppServer() {
     });
 
     saveDatabase();
-    res.json({ success: true, data: trip, request: modReq });
+    const resp = { success: true, data: trip, request: modReq };
+    saveIdempotentResponse(req.body?.clientRequestId, resp);
+    res.json(resp);
   });
 
   router.post('/trips/:id/approve-modification', (req: Request, res: Response) => {
@@ -1405,99 +1797,408 @@ export async function createAppServer() {
     res.json({ success: true, data: trip });
   });
 
-  // Start Trip: STRICTLY requires explicit manager approval (status === 'approved')
-  router.post('/trips/:id/start', (req: Request, res: Response) => {
-    const { id } = req.params;
-    const trip = db.trips.find((t) => t.id === id);
+  // Start Trip: Disabled for driver — tracking activates automatically when Manager approves trip
+  router.post('/trips/:id/start', (_req: Request, res: Response) => {
+    return res.status(403).json({
+      success: false,
+      error: 'التتبع يتم حصرياً عبر اعتماد الرحلة من المدير العام؛ لا يحق للسائق بدء أو إيقاف التتبع يدوياً.',
+    });
+  });
+
+  // Manager explicitly stops active GPS tracking on a trip
+  router.post('/trips/:id/stop-tracking', (req: Request, res: Response) => {
+    const cached = getIdempotentResponse(req.body?.clientRequestId);
+    if (cached) return res.json(cached);
+
+    const trip = db.trips.find((t) => t.id === req.params.id);
     if (!trip) return res.status(404).json({ success: false, error: 'الرحلة غير موجودة' });
 
-    if (trip.status !== 'approved') {
-      return res.status(403).json({
+    if (trip.status === 'completed_pending_review' || trip.status === 'closed') {
+      return res.json({ success: true, data: trip, deduplicated: true });
+    }
+
+    if (trip.status !== 'in_progress' && trip.status !== 'approved') {
+      return res.status(400).json({
         success: false,
-        error: 'ممنوع بدء الرحلة دون وجود موافقة صريحة واعتماد مسبق من المدير!',
+        error: 'هذه الرحلة ليست في حالة التتبع النشط حالياً',
       });
     }
 
-    if (trip.createdByRole === 'manager') {
-      if (trip.driverAcceptanceStatus === 'declined') {
-        return res.status(403).json({
-          success: false,
-          error: 'تم تسجيل رد السائق بعدم الموافقة على هذه الرحلة؛ يرجى مراجعتها من المدير أو الموافقة عليها أولاً.',
-        });
-      }
-      if (trip.driverAcceptanceStatus === 'pending') {
-        return res.status(403).json({
-          success: false,
-          error: 'يرجى تأكيد موافقة السائق على طلب الرحلة المقترح من المدير قبل البدء.',
-        });
-      }
-    }
-
-    const startLat = Number(req.body?.lat) || db.settings.plantLocation.lat;
-    const startLng = Number(req.body?.lng) || db.settings.plantLocation.lng;
     const nowIso = new Date().toISOString();
+    const managerName = req.body?.managerName || 'المدير العام';
+    const reason = (req.body?.reason || '').trim();
+    const lastPt = (trip.gpsPoints || []).slice(-1)[0];
+    const stopLat = lastPt?.lat || db.truck.lastLat || db.settings.plantLocation.lat;
+    const stopLng = lastPt?.lng || db.truck.lastLng || db.settings.plantLocation.lng;
 
-    trip.status = 'in_progress';
-    trip.startedAt = nowIso;
-    trip.startLocation = { lat: startLat, lng: startLng };
+    trip.returnedToPlantAt = trip.returnedToPlantAt || nowIso;
+    trip.completedAt = nowIso;
+    trip.lastSyncedAt = nowIso;
+    trip.syncStatus = 'synced';
+    trip.status = 'completed_pending_review';
+    trip.actualDistanceKm = trip.actualDistanceKm ?? trip.estimatedDistanceKm;
+    trip.actualFuelLiters =
+      trip.actualFuelLiters ??
+      Number(((trip.actualDistanceKm || 0) * db.settings.truckDieselConsumptionPerKm).toFixed(2));
 
-    for (const ordId of trip.orderIds) {
-      const o = db.orders.find((ord) => ord.id === ordId);
-      if (o) o.status = 'in_delivery';
-    }
+    const actualRevenue = trip.customerStops.reduce((sum, s) => sum + s.deliveredLiters * s.pricePerLiter, 0);
+    const actualFuelCost = (trip.actualFuelLiters || trip.estimatedFuelLiters) * db.settings.dieselPricePerLiter;
+    const actualProdCost = trip.deliveredLiters * db.settings.waterProductionCostPerLiter;
+    const actualTotalCost = Math.round(actualFuelCost + actualProdCost + trip.driverWageShare + trip.maintenanceShare);
 
-    db.truck.status = 'on_trip';
-    db.truck.lastEvent = 'START';
-    db.truck.lastLat = startLat;
-    db.truck.lastLng = startLng;
+    trip.actualRevenue = actualRevenue;
+    trip.actualCost = actualTotalCost;
+    trip.actualProfit = actualRevenue - actualTotalCost;
+
+    db.truck.status = 'idle';
+    db.truck.currentTripId = undefined;
+    db.truck.currentWaterLiters = 0;
+    db.truck.lastEvent = 'END';
+    db.truck.lastLat = stopLat;
+    db.truck.lastLng = stopLng;
     db.truck.lastUpdateTimestamp = nowIso;
+    db.truck.odometerKm += Math.round(trip.actualDistanceKm || 0);
 
-    const firstPt: TripGPSPoint = {
-      id: req.body?.startPointId || `pt-start-${trip.id}`,
-      tripId: trip.id,
-      lat: startLat,
-      lng: startLng,
-      speedKmH: 0,
-      accuracy: Number(req.body?.accuracy) || 10,
-      timestamp: nowIso,
-      seq: 1,
-      distanceFromPrevKm: 0,
-      source: 'gps_watch',
-    };
-    mergeGpsPointsIdempotent(trip, [firstPt]);
-
-    const gpsEvent: GPSEvent = {
-      id: `gps-${Date.now()}`,
+    db.gpsEvents.push({
+      id: `gps-end-${Date.now()}`,
       tripId: trip.id,
       tripNumber: trip.tripNumber,
       timestamp: nowIso,
-      eventType: 'START',
-      lat: startLat,
-      lng: startLng,
+      eventType: 'END',
+      lat: stopLat,
+      lng: stopLng,
       speed: 0,
       source: 'gps_auto',
       sequenceNumber: db.gpsEvents.length + 1,
       isProcessed: true,
-    };
-    db.gpsEvents.push(gpsEvent);
+    });
 
-    appendAudit(trip, 'driver', trip.driverName, 'بدء تنفيذ الرحلة وتشغيل تتبع GPS', `موقع الانطلاق: ${startLat.toFixed(5)}, ${startLng.toFixed(5)}`);
+    appendAudit(
+      trip,
+      'manager',
+      managerName,
+      'إيقاف التتبع من قبل المدير',
+      reason || 'أوقف المدير تتبع GPS للرحلة وحولها للمراجعة'
+    );
 
-    notifyAndBroadcast('trip:started', {
-      targetRole: 'manager',
-      actorRole: 'driver',
-      actorName: trip.driverName,
-      category: 'trip_started',
-      priority: 'info',
-      title: `انطلق السائق في الرحلة ${trip.tripNumber}`,
-      message: `تم تشغيل التتبع التلقائي عبر GPS من نقطة الانطلاق (${trip.customerStops.length} وجهات)`,
+    notifyAndBroadcast('trip:tracking_stopped', {
+      targetRole: 'driver',
+      actorRole: 'manager',
+      actorName: managerName,
+      category: 'trip_closed',
+      priority: 'urgent',
+      title: `أوقف المدير تتبع الرحلة ${trip.tripNumber}`,
+      message: reason || 'تم إيقاف التتبع الجغرافي التلقائي من لوحة المدير العام.',
       tripId: trip.id,
       tripNumber: trip.tripNumber,
+    });
+
+    saveDatabase();
+    const resp = { success: true, data: trip };
+    saveIdempotentResponse(req.body?.clientRequestId, resp);
+    res.json(resp);
+  });
+
+  // Auto-start GPS tracking when the truck leaves the plant perimeter
+  router.post('/gps/auto-start', (req: Request, res: Response) => {
+    const cached = getIdempotentResponse(req.body?.clientRequestId);
+    if (cached) return res.json(cached);
+
+    const lat = Number(req.body?.lat);
+    const lng = Number(req.body?.lng);
+    const speedKmH = req.body?.speedKmH !== undefined ? Number(req.body.speedKmH) : 0;
+    const accuracy = req.body?.accuracy !== undefined ? Number(req.body.accuracy) : undefined;
+    const clientPts: TripGPSPoint[] = Array.isArray(req.body?.gpsPoints) ? req.body.gpsPoints : [];
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({ success: false, error: 'إحداثيات GPS غير صالحة' });
+    }
+
+    const nowIso = req.body?.timestamp || new Date().toISOString();
+
+    // 1. If a trip is already in_progress, deduplicate cleanly and merge points
+    const activeExisting = db.trips.find((t) => t.status === 'in_progress');
+    if (activeExisting) {
+      if (clientPts.length > 0) {
+        mergeGpsPointsIdempotent(activeExisting, clientPts);
+      }
+      db.truck.status = 'on_trip';
+      db.truck.currentTripId = activeExisting.id;
+      db.truck.lastLat = lat;
+      db.truck.lastLng = lng;
+      db.truck.lastSpeed = Number.isFinite(speedKmH) ? speedKmH : 0;
+      db.truck.lastUpdateTimestamp = nowIso;
+      saveDatabase();
+      const resp = { success: true, alreadyActive: true, data: activeExisting };
+      saveIdempotentResponse(req.body?.clientRequestId, resp);
+      return res.json(resp);
+    }
+
+    // 2. Cooldown guard: prevent immediate re-trigger right after Manager manually stops tracking
+    const recentManagerStopped = db.trips.find(
+      (t) =>
+        (t.status === 'completed_pending_review' || t.status === 'closed') &&
+        (t.auditLogs || []).some((a) => a.action === 'إيقاف التتبع من قبل المدير')
+    );
+    if (recentManagerStopped) {
+      const stopTimeMs = new Date(
+        recentManagerStopped.completedAt ||
+          recentManagerStopped.auditLogs?.slice(-1)[0]?.timestamp ||
+          0
+      ).getTime();
+      if (Number.isFinite(stopTimeMs) && Date.now() - stopTimeMs < 120 * 1000) {
+        const lastStopPt =
+          recentManagerStopped.returnLocation ||
+          (recentManagerStopped.gpsPoints || []).slice(-1)[0];
+        if (lastStopPt) {
+          const distFromStop = haversineDistanceMeters(lat, lng, lastStopPt.lat, lastStopPt.lng);
+          if (distFromStop < 250) {
+            return res.json({
+              success: false,
+              suppressedCooldown: true,
+              reason: 'تم إيقاف التتبع من المدير مؤخراً؛ لن يُعاد التشغيل حتى العودة للمصنع أو الابتعاد عن نقطة الإيقاف.',
+            });
+          }
+        }
+      }
+    }
+
+    // 3. Verify plant perimeter departure threshold & GPS reliability
+    const evalResult = evaluatePlantDepartureTrigger({
+      lat,
+      lng,
+      accuracy,
+      speedKmH,
+      settings: db.settings,
+    });
+
+    if (!evalResult.isReliableAccuracy || !evalResult.outsideTriggerZone) {
+      return res.json({
+        success: false,
+        notDeparted: true,
+        distanceMeters: evalResult.distanceFromPlantMeters,
+        triggerDistanceMeters: evalResult.triggerDistanceMeters,
+        reason: 'الوايت لا يزال داخل محيط المصنع أو دقة إشارة GPS غير كافية للتشغيل التلقائي',
+      });
+    }
+
+    // 4. Transition a waiting 'approved' trip to 'in_progress', OR create a dedicated auto-departure trip
+    const waitingApproved = db.trips.find(
+      (t) => t.status === 'approved' && t.driverAcceptanceStatus !== 'declined'
+    );
+
+    const plantLat = db.settings.plantLocation.lat;
+    const plantLng = db.settings.plantLocation.lng;
+
+    if (waitingApproved) {
+      waitingApproved.status = 'in_progress';
+      waitingApproved.startedAt = waitingApproved.startedAt || nowIso;
+      waitingApproved.startLocation = waitingApproved.startLocation || { lat: plantLat, lng: plantLng };
+      waitingApproved.driverAcceptanceStatus = 'accepted';
+      waitingApproved.driverRespondedAt = waitingApproved.driverRespondedAt || nowIso;
+      waitingApproved.syncStatus = 'synced';
+
+      for (const ordId of waitingApproved.orderIds) {
+        const o = db.orders.find((ord) => ord.id === ordId);
+        if (o) o.status = 'in_delivery';
+      }
+
+      const seedPoints: TripGPSPoint[] =
+        clientPts.length > 0
+          ? clientPts.map((p) => ({ ...p, tripId: waitingApproved.id }))
+          : [
+              {
+                id: `pt-${waitingApproved.id}-dep-${Date.now()}`,
+                tripId: waitingApproved.id,
+                lat,
+                lng,
+                speedKmH: Number.isFinite(speedKmH) ? speedKmH : 0,
+                accuracy,
+                timestamp: nowIso,
+                seq: 1,
+                distanceFromPrevKm: 0,
+                source: 'gps_watch',
+              },
+            ];
+      mergeGpsPointsIdempotent(waitingApproved, seedPoints);
+
+      db.truck.status = 'on_trip';
+      db.truck.currentTripId = waitingApproved.id;
+      db.truck.currentWaterLiters = waitingApproved.initialLoadLiters;
+      db.truck.lastEvent = 'DEPARTURE';
+      db.truck.lastLat = lat;
+      db.truck.lastLng = lng;
+      db.truck.lastSpeed = Number.isFinite(speedKmH) ? speedKmH : 0;
+      db.truck.lastUpdateTimestamp = nowIso;
+
+      db.gpsEvents.push({
+        id: `gps-dep-${Date.now()}`,
+        tripId: waitingApproved.id,
+        tripNumber: waitingApproved.tripNumber,
+        timestamp: nowIso,
+        eventType: 'DEPARTURE',
+        lat,
+        lng,
+        speed: Number.isFinite(speedKmH) ? speedKmH : 0,
+        source: 'gps_auto',
+        sequenceNumber: db.gpsEvents.length + 1,
+        isProcessed: true,
+      });
+
+      appendAudit(
+        waitingApproved,
+        'system',
+        waitingApproved.driverName,
+        'بدء التتبع التلقائي عند ابتعاد الوايت عن محيط المصنع',
+        `تم رصد خروج الوايت عن محيط المصنع (${evalResult.distanceFromPlantMeters} م >= ${evalResult.triggerDistanceMeters} م)`
+      );
+
+      notifyAndBroadcast('gps:auto_started', {
+        targetRole: 'manager',
+        actorRole: 'system',
+        actorName: waitingApproved.driverName,
+        category: 'gps_alert',
+        priority: 'urgent',
+        title: `انطلاق تلقائي للرحلة ${waitingApproved.tripNumber}`,
+        message: `ابتعد الوايت عن محيط المصنع بمسافة ${evalResult.distanceFromPlantMeters} م وتم تفعيل التتبع الجغرافي تلقائياً`,
+        tripId: waitingApproved.id,
+        tripNumber: waitingApproved.tripNumber,
+        actionTab: 'trips',
+      });
+
+      saveDatabase();
+      const resp = { success: true, data: waitingApproved, activatedExistingTrip: true };
+      saveIdempotentResponse(req.body?.clientRequestId, resp);
+      return res.json(resp);
+    }
+
+    // Create a new auto-departure tracking trip
+    const matchedDriver = req.body?.driverId
+      ? db.driverAccounts.find((d) => d.id === req.body.driverId)
+      : undefined;
+    const assignedDriverId = matchedDriver?.id || db.truck.driverId;
+    const assignedDriverName = matchedDriver?.name || req.body?.driverName || db.truck.driverName;
+    const tripSeq = db.trips.length + 1;
+    const newTripId =
+      typeof req.body?.tripId === 'string' && req.body.tripId.startsWith('trip-auto-')
+        ? req.body.tripId
+        : `trip-auto-${Date.now()}`;
+    const tripNumber = `AUTO-2026-${String(tripSeq).padStart(4, '0')}`;
+
+    const newAutoTrip: Trip = {
+      id: newTripId,
+      tripNumber,
+      date: nowIso.split('T')[0],
+      truckId: db.truck.id,
+      driverId: assignedDriverId,
+      driverName: assignedDriverName,
+      truckPlate: db.truck.plateNumber,
+      initialLoadLiters: 0,
+      deliveredLiters: 0,
+      remainingLiters: 0,
+      status: 'in_progress',
+      syncStatus: 'synced',
+      createdByRole: 'manager',
+      driverAcceptanceStatus: 'accepted',
+      driverRespondedAt: nowIso,
+      customerStops: [],
+      orderIds: [],
+      proposedAt: nowIso,
+      approvedAt: nowIso,
+      approvedBy: 'رصد آلي (محيط المصنع)',
+      startedAt: nowIso,
+      startLocation: { lat: plantLat, lng: plantLng },
+      gpsPoints: [],
+      detectedStops: [],
+      gpsGaps: [],
+      auditLogs: [
+        {
+          id: `aud-auto-${Date.now()}`,
+          timestamp: nowIso,
+          actorRole: 'system',
+          actorName: 'النظام الآلي',
+          action: 'بدء تتبع تلقائي عند ابتعاد الوايت عن محيط المصنع',
+          details: `ابتعد الوايت ${evalResult.distanceFromPlantMeters} م عن المصنع (حد التشغيل ${evalResult.triggerDistanceMeters} م)`,
+        },
+      ],
+      modificationRequests: [],
+      estimatedDistanceKm: 0,
+      estimatedFuelLiters: 0,
+      fuelCost: 0,
+      productionCost: 0,
+      driverWageShare: db.settings.driverWagePerTrip,
+      maintenanceShare: db.settings.maintenanceAllowancePerTrip,
+      otherExpensesShare: 0,
+      totalCost: db.settings.driverWagePerTrip + db.settings.maintenanceAllowancePerTrip,
+      expectedRevenue: 0,
+      expectedProfit: -(db.settings.driverWagePerTrip + db.settings.maintenanceAllowancePerTrip),
+      profitMarginPercent: 0,
+      capacityUtilizationPercent: 0,
+      departureRecommendation: 'GO_NOW',
+      recommendationReason: 'تتبع تلقائي عند ابتعاد الوايت عن محيط المصنع',
+      notes: `تم فتح سجل التتبع تلقائياً عند خروج الوايت من محيط المصنع (${evalResult.distanceFromPlantMeters} م)`,
+    };
+
+    const seedPoints: TripGPSPoint[] =
+      clientPts.length > 0
+        ? clientPts.map((p) => ({ ...p, tripId: newAutoTrip.id }))
+        : [
+            {
+              id: `pt-${newAutoTrip.id}-dep-${Date.now()}`,
+              tripId: newAutoTrip.id,
+              lat,
+              lng,
+              speedKmH: Number.isFinite(speedKmH) ? speedKmH : 0,
+              accuracy,
+              timestamp: nowIso,
+              seq: 1,
+              distanceFromPrevKm: 0,
+              source: 'gps_watch',
+            },
+          ];
+    mergeGpsPointsIdempotent(newAutoTrip, seedPoints);
+
+    db.truck.status = 'on_trip';
+    db.truck.currentTripId = newAutoTrip.id;
+    db.truck.lastEvent = 'DEPARTURE';
+    db.truck.lastLat = lat;
+    db.truck.lastLng = lng;
+    db.truck.lastSpeed = Number.isFinite(speedKmH) ? speedKmH : 0;
+    db.truck.lastUpdateTimestamp = nowIso;
+
+    db.gpsEvents.push({
+      id: `gps-dep-${Date.now()}`,
+      tripId: newAutoTrip.id,
+      tripNumber: newAutoTrip.tripNumber,
+      timestamp: nowIso,
+      eventType: 'DEPARTURE',
+      lat,
+      lng,
+      speed: Number.isFinite(speedKmH) ? speedKmH : 0,
+      source: 'gps_auto',
+      sequenceNumber: db.gpsEvents.length + 1,
+      isProcessed: true,
+    });
+
+    db.trips.unshift(newAutoTrip);
+
+    notifyAndBroadcast('gps:auto_started', {
+      targetRole: 'manager',
+      actorRole: 'system',
+      actorName: assignedDriverName,
+      category: 'gps_alert',
+      priority: 'urgent',
+      title: `بدء تتبع تلقائي للوايت خارج المصنع (${newAutoTrip.tripNumber})`,
+      message: `ابتعد الوايت عن محيط المصنع بمسافة ${evalResult.distanceFromPlantMeters} م — التتبع التلقائي نشط الآن`,
+      tripId: newAutoTrip.id,
+      tripNumber: newAutoTrip.tripNumber,
       actionTab: 'trips',
     });
 
     saveDatabase();
-    res.json({ success: true, data: trip });
+    const resp = { success: true, data: newAutoTrip };
+    saveIdempotentResponse(req.body?.clientRequestId, resp);
+    res.json(resp);
   });
 
   // Upload chronological GPS batch idempotently with tamper protection
@@ -1664,20 +2365,51 @@ export async function createAppServer() {
 
   // 7. Complete Trip Return to Plant -> 'completed_pending_review' (when synced online)
   router.post('/trips/:id/complete-return', (req: Request, res: Response) => {
+    const cached = getIdempotentResponse(req.body?.clientRequestId);
+    if (cached) return res.json(cached);
+
     const { id } = req.params;
-    const { lat, lng, detectedAutomatically, actualDistanceKm, actualFuelLiters, gpsPoints } = req.body;
+    const { lat, lng, detectedAutomatically, actualDistanceKm, actualFuelLiters, gpsPoints, clientRequestId } = req.body || {};
     const trip = db.trips.find((t) => t.id === id);
     if (!trip) return res.status(404).json({ success: false, error: 'الرحلة غير موجودة' });
+
+    if (trip.status === 'completed_pending_review' || trip.status === 'closed') {
+      return res.json({ success: true, data: trip, deduplicated: true });
+    }
 
     if (Array.isArray(gpsPoints) && gpsPoints.length > 0) {
       mergeGpsPointsIdempotent(trip, gpsPoints);
     }
 
-    const retLat = Number(lat) || db.settings.plantLocation.lat;
-    const retLng = Number(lng) || db.settings.plantLocation.lng;
+    const originLat = trip.startLocation?.lat ?? db.settings.plantLocation.lat;
+    const originLng = trip.startLocation?.lng ?? db.settings.plantLocation.lng;
+    const retLat = Number(lat) || originLat;
+    const retLng = Number(lng) || originLng;
+
+    if (Boolean(detectedAutomatically)) {
+      const readiness = evaluateTripCompletionReadiness({
+        trip,
+        settings: db.settings,
+        candidateReturnLocation: { lat: retLat, lng: retLng },
+      });
+      if (!readiness.qualified) {
+        saveDatabase();
+        return res.status(422).json({
+          success: false,
+          rejectedPrematureReturn: true,
+          reason: readiness.reason,
+          error: readiness.reason,
+        });
+      }
+    }
+
+    const distFromOrigin = Math.round(
+      haversineDistanceMeters(retLat, retLng, originLat, originLng)
+    );
     const distFromPlant = Math.round(
       haversineDistanceMeters(retLat, retLng, db.settings.plantLocation.lat, db.settings.plantLocation.lng)
     );
+    const measuredDist = Math.min(distFromOrigin, distFromPlant);
     const nowIso = new Date().toISOString();
 
     trip.returnedToPlantAt = trip.returnedToPlantAt || nowIso;
@@ -1686,7 +2418,7 @@ export async function createAppServer() {
     trip.returnLocation = {
       lat: retLat,
       lng: retLng,
-      distanceFromPlantMeters: distFromPlant,
+      distanceFromPlantMeters: measuredDist,
       detectedAutomatically: Boolean(detectedAutomatically),
     };
     trip.syncStatus = 'synced';
@@ -1710,31 +2442,48 @@ export async function createAppServer() {
     db.truck.lastEvent = 'RETURN_PLANT';
     db.truck.lastLat = retLat;
     db.truck.lastLng = retLng;
+    db.truck.lastUpdateTimestamp = nowIso;
     db.truck.odometerKm += Math.round(trip.actualDistanceKm || 0);
+
+    db.gpsEvents.push({
+      id: `gps-ret-${Date.now()}`,
+      tripId: trip.id,
+      tripNumber: trip.tripNumber,
+      timestamp: nowIso,
+      eventType: 'RETURN_PLANT',
+      lat: retLat,
+      lng: retLng,
+      speed: 0,
+      source: 'gps_auto',
+      sequenceNumber: db.gpsEvents.length + 1,
+      isProcessed: true,
+    });
 
     appendAudit(
       trip,
-      'driver',
+      'system',
       trip.driverName,
-      'تأكيد العودة إلى المصنع وإغلاق التتبع',
-      `المسافة المسجلة من المصنع عند التأكيد: ${distFromPlant} م`
+      'إيقاف التتبع تلقائياً عند العودة لنقطة الانطلاق',
+      `المسافة المسجلة من نقطة الانطلاق عند العودة: ${measuredDist} م`
     );
 
     notifyAndBroadcast('trip:returned_to_plant', {
       targetRole: 'manager',
-      actorRole: 'driver',
+      actorRole: 'system',
       actorName: trip.driverName,
       category: 'trip_returned_plant',
       priority: 'action_required',
-      title: `عاد الوايت للمصنع (${trip.tripNumber}) — بانتظار المراجعة`,
-      message: `سُلّم ${trip.deliveredLiters.toLocaleString()} لتر على مسافة ${trip.actualDistanceKm || 0} كم. يرجى المراجعة والإغلاق.`,
+      title: `عاد السائق لنقطة الانطلاق وتوقف التتبع (${trip.tripNumber})`,
+      message: `تم رصد عودة الوايت لنقطة الانطلاق وإيقاف التتبع التلقائي بمسافة ${trip.actualDistanceKm || 0} كم. يرجى المراجعة والإغلاق.`,
       tripId: trip.id,
       tripNumber: trip.tripNumber,
       actionTab: 'trips',
     });
 
     saveDatabase();
-    res.json({ success: true, data: trip });
+    const resp = { success: true, data: trip };
+    saveIdempotentResponse(clientRequestId, resp);
+    res.json(resp);
   });
 
   // Backwards-compatible alias /trips/:id/complete -> complete-return handler
@@ -1818,6 +2567,7 @@ export async function createAppServer() {
       pendingDeliveries = [],
       pendingOrders = [],
       pendingCustomers = [],
+      pendingDistricts = [],
       returnEvents = [],
       clientDemoResetVersion,
     } = req.body || {};
@@ -1839,6 +2589,7 @@ export async function createAppServer() {
           deliveryIds: [],
           orderIds: [],
           customerIds: [],
+          districtNames: [],
           returnEventIds: [],
         },
         rejectedTamperPointIds: [],
@@ -1854,16 +2605,130 @@ export async function createAppServer() {
       deliveryIds: [] as string[],
       orderIds: [] as string[],
       customerIds: [] as string[],
+      districtNames: [] as string[],
       returnEventIds: [] as string[],
     };
     const rejectedTamperPointIds: string[] = [];
 
-    // A. Sync offline trip updates ONLY for existing Manager-created trips (drivers cannot create trip plans)
+    // A. Sync offline trip updates for Manager-created trips AND offline auto-departure tracking trips (trip-auto-*)
     if (Array.isArray(offlineTrips)) {
       for (const offTrip of offlineTrips) {
         if (!offTrip || !offTrip.id) continue;
-        const existing = db.trips.find((t) => t.id === offTrip.id);
+        let existing = db.trips.find((t) => t.id === offTrip.id);
         if (!existing) {
+          if (typeof offTrip.id === 'string' && offTrip.id.startsWith('trip-auto-')) {
+            const nowIso = new Date().toISOString();
+            const tripSeq = db.trips.length + 1;
+            const autoStatus: TripStatus =
+              offTrip.status === 'pending_sync' ||
+              offTrip.status === 'returned_to_plant' ||
+              offTrip.status === 'completed_pending_review'
+                ? 'completed_pending_review'
+                : 'in_progress';
+            const syncedAutoTrip: Trip = {
+              id: offTrip.id,
+              tripNumber: offTrip.tripNumber || `AUTO-2026-${String(tripSeq).padStart(4, '0')}`,
+              date: offTrip.date || nowIso.split('T')[0],
+              truckId: db.truck.id,
+              driverId: offTrip.driverId || db.truck.driverId,
+              driverName: offTrip.driverName || db.truck.driverName,
+              truckPlate: db.truck.plateNumber,
+              initialLoadLiters: 0,
+              deliveredLiters: 0,
+              remainingLiters: 0,
+              status: autoStatus,
+              syncStatus: 'synced',
+              lastSyncedAt: nowIso,
+              createdByRole: 'manager',
+              driverAcceptanceStatus: 'accepted',
+              driverRespondedAt: offTrip.startedAt || nowIso,
+              customerStops: [],
+              orderIds: [],
+              proposedAt: offTrip.proposedAt || nowIso,
+              approvedAt: offTrip.approvedAt || nowIso,
+              approvedBy: 'رصد آلي (محيط المصنع - دون إنترنت)',
+              startedAt: offTrip.startedAt || nowIso,
+              startLocation: {
+                lat: db.settings.plantLocation.lat,
+                lng: db.settings.plantLocation.lng,
+              },
+              returnedToPlantAt: offTrip.returnedToPlantAt,
+              completedAt: offTrip.completedAt,
+              returnLocation: offTrip.returnLocation,
+              gpsPoints: [],
+              detectedStops: [],
+              gpsGaps: [],
+              auditLogs: [
+                {
+                  id: `aud-sync-auto-${Date.now()}`,
+                  timestamp: nowIso,
+                  actorRole: 'system',
+                  actorName: 'المزامنة التلقائية',
+                  action: 'مزامنة رحلة تتبع تلقائي (ابتعاد عن المصنع دون إنترنت)',
+                  details: `تم إنشاء السجل ميدانياً أثناء انقطاع الإنترنت ومزامنته الآن`,
+                },
+              ],
+              modificationRequests: [],
+              estimatedDistanceKm: 0,
+              estimatedFuelLiters: 0,
+              fuelCost: 0,
+              productionCost: 0,
+              driverWageShare: db.settings.driverWagePerTrip,
+              maintenanceShare: db.settings.maintenanceAllowancePerTrip,
+              otherExpensesShare: 0,
+              totalCost: db.settings.driverWagePerTrip + db.settings.maintenanceAllowancePerTrip,
+              expectedRevenue: 0,
+              expectedProfit: -(db.settings.driverWagePerTrip + db.settings.maintenanceAllowancePerTrip),
+              profitMarginPercent: 0,
+              capacityUtilizationPercent: 0,
+              departureRecommendation: 'GO_NOW',
+              recommendationReason: 'تتبع تلقائي عند ابتعاد الوايت عن محيط المصنع',
+              notes: offTrip.notes || 'رحلة تتبع تلقائي مسجلة دون إنترنت عند الابتعاد عن محيط المصنع',
+            };
+            if (Array.isArray(offTrip.gpsPoints) && offTrip.gpsPoints.length > 0) {
+              mergeGpsPointsIdempotent(syncedAutoTrip, offTrip.gpsPoints);
+            }
+            db.trips.unshift(syncedAutoTrip);
+            existing = syncedAutoTrip;
+
+            const firstPt = syncedAutoTrip.gpsPoints?.[0];
+            db.gpsEvents.push({
+              id: `gps-dep-sync-${Date.now()}-${acks.tripIds.length}`,
+              tripId: syncedAutoTrip.id,
+              tripNumber: syncedAutoTrip.tripNumber,
+              timestamp: syncedAutoTrip.startedAt || nowIso,
+              eventType: 'DEPARTURE',
+              lat: firstPt?.lat ?? db.settings.plantLocation.lat,
+              lng: firstPt?.lng ?? db.settings.plantLocation.lng,
+              speed: firstPt?.speedKmH ?? 0,
+              source: 'gps_auto',
+              sequenceNumber: db.gpsEvents.length + 1,
+              isProcessed: true,
+            });
+
+            if (autoStatus === 'in_progress') {
+              db.truck.status = 'on_trip';
+              db.truck.currentTripId = syncedAutoTrip.id;
+              db.truck.lastEvent = 'DEPARTURE';
+              db.truck.lastUpdateTimestamp = nowIso;
+            }
+
+            pushNotification({
+              targetRole: 'manager',
+              actorRole: 'system',
+              actorName: syncedAutoTrip.driverName,
+              category: 'gps_alert',
+              priority: 'urgent',
+              title: `تمت مزامنة تتبع تلقائي للوايت (${syncedAutoTrip.tripNumber})`,
+              message: `ابتعد الوايت عن محيط المصنع وتم تسجيل المسار دون إنترنت ومزامنته الآن`,
+              tripId: syncedAutoTrip.id,
+              tripNumber: syncedAutoTrip.tripNumber,
+              actionTab: 'trips',
+            });
+
+            acks.tripIds.push(syncedAutoTrip.id);
+            continue;
+          }
           // Reject/ignore any unauthorized driver-created offline trip plan
           acks.tripIds.push(offTrip.id);
           continue;
@@ -1977,20 +2842,85 @@ export async function createAppServer() {
       }
     }
 
-    // E. Sync offline orders idempotently by order ID
+    // D2. Sync custom districts first so all subsequent records reference valid saved districts
+    if (Array.isArray(pendingDistricts)) {
+      for (const rawDist of pendingDistricts) {
+        if (typeof rawDist !== 'string') continue;
+        registerCustomDistrict(rawDist);
+        acks.districtNames.push(rawDist);
+      }
+    }
+
+    // E1. Sync offline customers FIRST so linked orders immediately match them
+    if (Array.isArray(pendingCustomers)) {
+      for (const offCust of pendingCustomers) {
+        if (!offCust || !offCust.id) continue;
+        const cleanDistrict = registerCustomDistrict(offCust.district) || DEFAULT_AL_WADI_DISTRICT;
+        const already = db.customers.some(
+          (c) =>
+            c.id === offCust.id ||
+            (c.name.trim() === String(offCust.name || '').trim() &&
+              c.phone.trim() === String(offCust.phone || '').trim() &&
+              c.createdAt === offCust.createdAt)
+        );
+        if (!already) {
+          const custSeq = db.customers.length + 1;
+          const newCust: Customer = {
+            id: offCust.id,
+            customerId: `CUST-${String(custSeq).padStart(4, '0')}`,
+            name: String(offCust.name || '').trim() || 'عميل جديد',
+            phone: String(offCust.phone || '').trim(),
+            altPhone: '',
+            district: cleanDistrict,
+            addressDetails: String(offCust.addressDetails || '').trim(),
+            lat: Number(offCust.lat) || db.settings.plantLocation.lat + 0.005,
+            lng: Number(offCust.lng) || db.settings.plantLocation.lng + 0.005,
+            tankCapacityLiters: Number(offCust.tankCapacityLiters) || 2000,
+            tankRemainingLiters: 0,
+            notes: offCust.notes || '',
+            createdAt: offCust.createdAt || new Date().toISOString(),
+            isActive: true,
+            totalOrdersCount: 0,
+            totalLitersDelivered: 0,
+            isOfflineCreated: true,
+          };
+          db.customers.unshift(newCust);
+        }
+        acks.customerIds.push(offCust.id);
+      }
+    }
+
+    // E2. Sync offline orders idempotently by order ID & auto-ensure customer + custom district
     if (Array.isArray(pendingOrders)) {
       for (const offOrd of pendingOrders) {
         if (!offOrd || !offOrd.id) continue;
         const already = db.orders.some((o) => o.id === offOrd.id);
         if (!already) {
+          const ensured = ensureCustomerRecord(
+            {
+              customerId: offOrd.customerId,
+              newCustomerId: offOrd.customerId && offOrd.customerId !== 'cust-offline' ? offOrd.customerId : undefined,
+              customerName: offOrd.customerName,
+              phone: offOrd.phone,
+              district: offOrd.district,
+              addressDetails: offOrd.addressDetails,
+              lat: offOrd.lat,
+              lng: offOrd.lng,
+              tankCapacity: offOrd.tankCapacity,
+              createdAt: offOrd.createdAt,
+              isOfflineCreated: true,
+            },
+            'driver',
+            offOrd.actorName || db.truck.driverName
+          );
           const orderSeq = db.orders.length + 1;
           const newOrder: Order = {
             id: offOrd.id,
             orderNumber: `ORD-2026-${String(orderSeq).padStart(4, '0')}`,
-            customerId: offOrd.customerId || 'cust-offline',
+            customerId: ensured.customer.id,
             customerName: offOrd.customerName,
             phone: offOrd.phone,
-            district: offOrd.district || 'حي الروضة',
+            district: ensured.district,
             addressDetails: offOrd.addressDetails || '',
             lat: Number(offOrd.lat) || db.settings.plantLocation.lat + 0.006,
             lng: Number(offOrd.lng) || db.settings.plantLocation.lng + 0.006,
@@ -2011,44 +2941,27 @@ export async function createAppServer() {
       }
     }
 
-    // E2. Sync offline customers idempotently by customer ID
-    if (Array.isArray(pendingCustomers)) {
-      for (const offCust of pendingCustomers) {
-        if (!offCust || !offCust.id) continue;
-        const already = db.customers.some((c) => c.id === offCust.id);
-        if (!already) {
-          const custSeq = db.customers.length + 1;
-          const newCust: Customer = {
-            id: offCust.id,
-            customerId: `CUST-${String(custSeq).padStart(4, '0')}`,
-            name: offCust.name,
-            phone: offCust.phone,
-            altPhone: '',
-            district: offCust.district || 'حي الروضة',
-            addressDetails: offCust.addressDetails || '',
-            lat: Number(offCust.lat) || db.settings.plantLocation.lat + 0.005,
-            lng: Number(offCust.lng) || db.settings.plantLocation.lng + 0.005,
-            tankCapacityLiters: Number(offCust.tankCapacityLiters) || 2000,
-            tankRemainingLiters: 0,
-            notes: offCust.notes || '',
-            createdAt: offCust.createdAt || new Date().toISOString(),
-            isActive: true,
-            totalOrdersCount: 0,
-            totalLitersDelivered: 0,
-            isOfflineCreated: true,
-          };
-          db.customers.unshift(newCust);
-        }
-        acks.customerIds.push(offCust.id);
-      }
-    }
-
     // F. Sync return-to-plant confirmation events -> moves trip into 'completed_pending_review'
     if (Array.isArray(returnEvents)) {
       for (const ret of returnEvents) {
         if (!ret || !ret.id || !ret.tripId) continue;
         const trip = db.trips.find((t) => t.id === ret.tripId);
         if (trip) {
+          if (Boolean(ret.detectedAutomatically)) {
+            const readiness = evaluateTripCompletionReadiness({
+              trip,
+              settings: db.settings,
+              candidateReturnLocation: {
+                lat: Number(ret.lat) || db.settings.plantLocation.lat,
+                lng: Number(ret.lng) || db.settings.plantLocation.lng,
+              },
+            });
+            if (!readiness.qualified) {
+              acks.returnEventIds.push(ret.id);
+              continue;
+            }
+          }
+
           trip.returnedToPlantAt = ret.returnedAt || new Date().toISOString();
           trip.completedAt = ret.returnedAt || new Date().toISOString();
           trip.returnLocation = {
@@ -2102,6 +3015,7 @@ export async function createAppServer() {
       acks.deliveryIds.length +
       acks.orderIds.length +
       acks.customerIds.length +
+      acks.districtNames.length +
       acks.returnEventIds.length;
 
     if (totalSynced > 0) {
@@ -2135,7 +3049,15 @@ export async function createAppServer() {
   });
 
   router.post('/reconciliations', (req: Request, res: Response) => {
-    const payload = req.body;
+    const payload = req.body || {};
+    const cached = getIdempotentResponse(payload.clientRequestId);
+    if (cached) return res.json(cached);
+
+    if (payload.tripId && db.reconciliations.some((r) => r.tripId === payload.tripId)) {
+      const existing = db.reconciliations.find((r) => r.tripId === payload.tripId);
+      return res.json({ success: true, data: existing, deduplicated: true });
+    }
+
     const recSeq = db.reconciliations.length + 1;
     const recNumber = `REC-2026-${String(recSeq).padStart(4, '0')}`;
 
@@ -2183,7 +3105,9 @@ export async function createAppServer() {
 
     saveDatabase();
     broadcastWs({ type: 'state:updated', reason: 'reconciliation:created' });
-    res.json({ success: true, data: newRec });
+    const resp = { success: true, data: newRec };
+    saveIdempotentResponse(payload.clientRequestId, resp);
+    res.json(resp);
   });
 
   // 10. Expenses
@@ -2192,15 +3116,33 @@ export async function createAppServer() {
   });
 
   router.post('/expenses', (req: Request, res: Response) => {
-    const payload = req.body;
+    const payload = req.body || {};
+    const cached = getIdempotentResponse(payload.clientRequestId);
+    if (cached) return res.json(cached);
+
+    const cleanDesc = String(payload.description || '').trim();
+    const numAmount = Number(payload.amount);
+    const recentExactExp = db.expenses.find(
+      (e) =>
+        e.description.trim() === cleanDesc &&
+        e.amount === numAmount &&
+        e.category === (payload.category || 'other') &&
+        e.date === (payload.date || new Date().toISOString().split('T')[0]) &&
+        e.id.startsWith('exp-') &&
+        Date.now() - Number(e.id.split('-')[1] || 0) < 8000
+    );
+    if (recentExactExp) {
+      return res.json({ success: true, data: recentExactExp, deduplicated: true });
+    }
+
     const expSeq = db.expenses.length + 1;
     const newExpense: Expense = {
       id: `exp-${Date.now()}`,
       expenseNumber: `EXP-2026-${String(expSeq).padStart(4, '0')}`,
       date: payload.date || new Date().toISOString().split('T')[0],
       category: payload.category || 'other',
-      description: payload.description,
-      amount: Number(payload.amount),
+      description: cleanDesc,
+      amount: numAmount,
       liters: payload.liters ? Number(payload.liters) : undefined,
       tripId: payload.tripId,
       tripNumber: payload.tripNumber,
@@ -2210,7 +3152,9 @@ export async function createAppServer() {
     db.expenses.unshift(newExpense);
     broadcastWs({ type: 'state:updated', reason: 'expense:created' });
     saveDatabase();
-    res.json({ success: true, data: newExpense });
+    const resp = { success: true, data: newExpense };
+    saveIdempotentResponse(payload.clientRequestId, resp);
+    res.json(resp);
   });
 
   // 11. Settings & Truck
@@ -2272,16 +3216,29 @@ export async function createAppServer() {
   });
 
   router.post('/directives', (req: Request, res: Response) => {
-    const { title, message, priority, tripId, tripNumber, customerId, customerName, createdBy } = req.body || {};
+    const { title, message, priority, tripId, tripNumber, customerId, customerName, createdBy, clientRequestId } = req.body || {};
+    const cached = getIdempotentResponse(clientRequestId);
+    if (cached) return res.json(cached);
+
     if (!title || !message) {
       return res.status(400).json({ success: false, error: 'يرجى كتابة عنوان التوجيه وتفاصيله' });
     }
+    const cleanTitle = String(title).trim();
+    const cleanMessage = String(message).trim();
+    const eightSecAgo = Date.now() - 8 * 1000;
+    const rapidDir = db.directives.find(
+      (d) => d.title === cleanTitle && d.message === cleanMessage && new Date(d.createdAt).getTime() > eightSecAgo
+    );
+    if (rapidDir) {
+      return res.json({ success: true, data: rapidDir, deduplicated: true });
+    }
+
     const directive: ManagerDirective = {
       id: `dir-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       createdAt: new Date().toISOString(),
       createdBy: createdBy || 'المدير العام',
-      title: String(title).trim(),
-      message: String(message).trim(),
+      title: cleanTitle,
+      message: cleanMessage,
       priority: priority === 'urgent' ? 'urgent' : 'normal',
       tripId,
       tripNumber,
@@ -2306,7 +3263,9 @@ export async function createAppServer() {
     });
 
     saveDatabase();
-    res.json({ success: true, data: directive });
+    const resp = { success: true, data: directive };
+    saveIdempotentResponse(clientRequestId, resp);
+    res.json(resp);
   });
 
   router.post('/directives/:id/acknowledge', (req: Request, res: Response) => {
@@ -2388,7 +3347,10 @@ export async function createAppServer() {
 
   // Manager creates an approved driver account directly
   router.post('/drivers', (req: Request, res: Response) => {
-    const { name, phone, username, password, licenseNumber, assignToTruck } = req.body || {};
+    const { name, phone, username, password, licenseNumber, assignToTruck, clientRequestId } = req.body || {};
+    const cached = getIdempotentResponse(clientRequestId);
+    if (cached) return res.json(cached);
+
     const cleanName = String(name || '').trim();
     const cleanPhone = String(phone || '').trim();
     const cleanUsername = String(username || cleanPhone).trim().toLowerCase();
@@ -2437,12 +3399,16 @@ export async function createAppServer() {
 
     saveDatabase();
     broadcastWs({ type: 'state:updated', reason: 'driver:account_created' });
-    res.json({ success: true, data: newAccount });
+    const resp = { success: true, data: newAccount };
+    saveIdempotentResponse(clientRequestId, resp);
+    res.json(resp);
   });
 
   // Driver submits registration request -> status 'pending' until Manager approves
   router.post('/drivers/register', (req: Request, res: Response) => {
-    const { name, phone, username, password, licenseNumber } = req.body || {};
+    const { name, phone, username, password, licenseNumber, clientRequestId } = req.body || {};
+    const cached = getIdempotentResponse(clientRequestId);
+    if (cached) return res.json(cached);
     const cleanName = String(name || '').trim();
     const cleanPhone = String(phone || '').trim();
     const cleanUsername = String(username || cleanPhone).trim().toLowerCase();
@@ -2494,7 +3460,9 @@ export async function createAppServer() {
       actionTab: 'driver_mgmt',
     });
     saveDatabase();
-    res.json({ success: true, data: pendingAccount });
+    const resp = { success: true, data: pendingAccount };
+    saveIdempotentResponse(clientRequestId, resp);
+    res.json(resp);
   });
 
   // Driver login verification (requires approved status + valid password)
@@ -2701,6 +3669,37 @@ export async function createAppServer() {
     res.json({ success: true });
   });
 
+  // 12b. Hydrate Express Server DB from Cloud Firestore Snapshot
+  router.post('/cloud-hydrate', (req: Request, res: Response) => {
+    try {
+      const payload = req.body || {};
+      const candidateRaw = {
+        customers: Array.isArray(payload.customers) ? payload.customers : db.customers,
+        orders: Array.isArray(payload.orders) ? payload.orders : db.orders,
+        trips: Array.isArray(payload.trips) ? payload.trips : db.trips,
+        invoices: Array.isArray(payload.invoices) ? payload.invoices : db.invoices,
+        reconciliations: Array.isArray(payload.reconciliations) ? payload.reconciliations : db.reconciliations,
+        expenses: Array.isArray(payload.expenses) ? payload.expenses : db.expenses,
+        gpsEvents: Array.isArray(payload.gpsEvents) ? payload.gpsEvents : db.gpsEvents,
+        notifications: Array.isArray(payload.notifications) ? payload.notifications : db.notifications,
+        directives: Array.isArray(payload.directives) ? payload.directives : db.directives,
+        driverAccounts: Array.isArray(payload.driverAccounts) ? payload.driverAccounts : db.driverAccounts,
+        truck: payload.truck && typeof payload.truck === 'object' ? payload.truck : db.truck,
+        settings: payload.settings && typeof payload.settings === 'object' ? payload.settings : db.settings,
+      };
+      const { migrated } = migrateDatabase(candidateRaw);
+      db = migrated;
+      saveDatabase();
+      if (payload.broadcast === true) {
+        broadcastWs({ type: 'state:updated', reason: 'cloud:hydrated' });
+      }
+      res.json({ success: true, data: db });
+    } catch (err) {
+      console.error('[Miyahna Cloud Hydrate] Error:', err);
+      res.status(500).json({ success: false, error: 'تعذر مزامنة الحالة السحابية مع الخادم' });
+    }
+  });
+
   // 13. Clear / Reset Operational Records (Demo mode permanently disabled in production)
   router.post('/reset-demo', (_req: Request, res: Response) => {
     res.status(403).json({
@@ -2761,6 +3760,198 @@ export async function createAppServer() {
       message: 'تم مسح كافة البيانات التجريبية من الخادم وتطبيقات السائقين وبدء النظام الفعلي',
       data: db,
     });
+  });
+
+  // 14. Google Maps Runtime Config (exposes provisioned API key if injected at runtime)
+  router.get('/maps-config', (_req: Request, res: Response) => {
+    const apiKey =
+      process.env.VITE_GOOGLE_MAPS_API_KEY ||
+      process.env.GOOGLE_MAPS_API_KEY ||
+      '';
+    res.json({ success: true, apiKey });
+  });
+
+  // 15. Protected Cloud SQL (PostgreSQL + Drizzle ORM + Firebase Auth) Endpoints
+  router.get('/sql/me', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+      const uid = req.user?.uid;
+      const email = req.user?.email || '';
+      if (!uid) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      const user = await getOrCreateUser(uid, email, req.user?.name, 'manager');
+      res.json({ success: true, data: user });
+    } catch (error: any) {
+      console.error('Failed /api/sql/me:', error);
+      res.status(500).json({ success: false, error: error.message || 'Database error' });
+    }
+  });
+
+  router.get('/sql/state', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+      const uid = req.user?.uid;
+      const email = req.user?.email || '';
+      if (!uid) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      await getOrCreateUser(uid, email, req.user?.name, 'manager');
+      const sqlState = await loadFullStateFromSql(uid);
+      res.json({ success: true, data: sqlState });
+    } catch (error: any) {
+      console.error('Failed /api/sql/state:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to load SQL state' });
+    }
+  });
+
+  router.post('/sql/sync-state', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+      const uid = req.user?.uid;
+      const email = req.user?.email || '';
+      if (!uid) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      const payload = req.body || {};
+      const result = await syncFullStateToSql(
+        { uid, email, displayName: req.user?.name },
+        {
+          customers: Array.isArray(payload.customers) ? payload.customers : db.customers,
+          orders: Array.isArray(payload.orders) ? payload.orders : db.orders,
+          trips: Array.isArray(payload.trips) ? payload.trips : db.trips,
+          invoices: Array.isArray(payload.invoices) ? payload.invoices : db.invoices,
+          reconciliations: Array.isArray(payload.reconciliations)
+            ? payload.reconciliations
+            : db.reconciliations,
+          expenses: Array.isArray(payload.expenses) ? payload.expenses : db.expenses,
+          gpsEvents: Array.isArray(payload.gpsEvents) ? payload.gpsEvents : db.gpsEvents,
+          notifications: Array.isArray(payload.notifications)
+            ? payload.notifications
+            : db.notifications,
+          directives: Array.isArray(payload.directives) ? payload.directives : db.directives,
+          driverAccounts: Array.isArray(payload.driverAccounts)
+            ? payload.driverAccounts
+            : db.driverAccounts,
+          truck: payload.truck && typeof payload.truck === 'object' ? payload.truck : db.truck,
+          settings:
+            payload.settings && typeof payload.settings === 'object'
+              ? payload.settings
+              : db.settings,
+        }
+      );
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      console.error('Failed /api/sql/sync-state:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to sync SQL state' });
+    }
+  });
+
+  router.get('/sql/customers', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+      const uid = req.user?.uid;
+      if (!uid) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      const rows = await getCustomersSql(uid);
+      res.json({ success: true, data: rows });
+    } catch (error: any) {
+      console.error('Failed GET /api/sql/customers:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to fetch customers' });
+    }
+  });
+
+  router.post('/sql/customers', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+      const uid = req.user?.uid;
+      const email = req.user?.email || '';
+      if (!uid) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      await getOrCreateUser(uid, email, req.user?.name, 'manager');
+      const saved = await upsertCustomerSql(req.body, uid);
+      res.json({ success: true, data: saved });
+    } catch (error: any) {
+      console.error('Failed POST /api/sql/customers:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to save customer' });
+    }
+  });
+
+  router.put('/sql/customers/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+      const uid = req.user?.uid;
+      const email = req.user?.email || '';
+      if (!uid) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      await getOrCreateUser(uid, email, req.user?.name, 'manager');
+      const saved = await upsertCustomerSql({ ...req.body, id: req.params.id }, uid);
+      res.json({ success: true, data: saved });
+    } catch (error: any) {
+      console.error('Failed PUT /api/sql/customers/:id:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to update customer' });
+    }
+  });
+
+  router.delete('/sql/customers/:id', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+      const uid = req.user?.uid;
+      if (!uid) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      const deleted = await deleteCustomerSql(req.params.id);
+      res.json({ success: true, data: deleted });
+    } catch (error: any) {
+      console.error('Failed DELETE /api/sql/customers/:id:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to delete customer' });
+    }
+  });
+
+  router.get('/sql/orders', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+      const uid = req.user?.uid;
+      if (!uid) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      const rows = await getOrdersSql(uid);
+      res.json({ success: true, data: rows });
+    } catch (error: any) {
+      console.error('Failed GET /api/sql/orders:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to fetch orders' });
+    }
+  });
+
+  router.post('/sql/orders', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+      const uid = req.user?.uid;
+      const email = req.user?.email || '';
+      if (!uid) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      await getOrCreateUser(uid, email, req.user?.name, 'manager');
+      const saved = await upsertOrderSql(req.body, uid);
+      res.json({ success: true, data: saved });
+    } catch (error: any) {
+      console.error('Failed POST /api/sql/orders:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to save order' });
+    }
+  });
+
+  router.get('/sql/trips', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+      const uid = req.user?.uid;
+      if (!uid) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      const rows = await getTripsSql(uid);
+      res.json({ success: true, data: rows });
+    } catch (error: any) {
+      console.error('Failed GET /api/sql/trips:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to fetch trips' });
+    }
+  });
+
+  router.get('/sql/districts', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+      const uid = req.user?.uid;
+      if (!uid) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      const rows = await getDistrictsSql(uid);
+      res.json({ success: true, data: rows });
+    } catch (error: any) {
+      console.error('Failed GET /api/sql/districts:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to fetch districts' });
+    }
+  });
+
+  router.post('/sql/districts', requireAuth, async (req: AuthRequest, res: Response) => {
+    try {
+      const uid = req.user?.uid;
+      const email = req.user?.email || '';
+      if (!uid) return res.status(401).json({ success: false, error: 'Unauthorized' });
+      await getOrCreateUser(uid, email, req.user?.name, 'manager');
+      const saved = await upsertDistrictSql(String(req.body?.name || ''), uid);
+      res.json({ success: true, data: saved });
+    } catch (error: any) {
+      console.error('Failed POST /api/sql/districts:', error);
+      res.status(500).json({ success: false, error: error.message || 'Failed to save district' });
+    }
   });
 
   app.use('/api', router);

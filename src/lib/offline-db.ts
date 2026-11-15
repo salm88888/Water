@@ -200,6 +200,20 @@ export async function idbGetUnsyncedCustomers(): Promise<LocalCustomerRecord[]> 
   return existing.filter((c) => !c.synced);
 }
 
+export async function idbQueueDistrict(district: string): Promise<void> {
+  const clean = (district || '').trim();
+  if (!clean || clean === '__other__' || clean === 'أخرى') return;
+  const existing = (await idbGetMeta<string[]>('pending_districts')) || [];
+  if (!existing.includes(clean)) {
+    await idbSetMeta('pending_districts', [...existing, clean]);
+  }
+}
+
+export async function idbGetUnsyncedDistricts(): Promise<string[]> {
+  const existing = (await idbGetMeta<string[]>('pending_districts')) || [];
+  return Array.isArray(existing) ? existing.filter((d) => typeof d === 'string' && d.trim().length > 0) : [];
+}
+
 export async function idbQueueReturnEvent(evt: Omit<LocalTripReturnEvent, 'synced'>): Promise<void> {
   await putManyToStore('return_events', [{ ...evt, synced: false }]);
 }
@@ -220,6 +234,7 @@ export async function idbMarkSyncedByIds(acks: {
   deliveryIds?: string[];
   orderIds?: string[];
   customerIds?: string[];
+  districtNames?: string[];
   returnEventIds?: string[];
 }): Promise<void> {
   if (acks.tripIds?.length) {
@@ -260,6 +275,14 @@ export async function idbMarkSyncedByIds(acks: {
       all.map((c) => (set.has(c.id) ? { ...c, synced: true } : c))
     );
   }
+  if (acks.districtNames?.length) {
+    const existing = (await idbGetMeta<string[]>('pending_districts')) || [];
+    const ackSet = new Set(acks.districtNames);
+    await idbSetMeta(
+      'pending_districts',
+      existing.filter((d) => !ackSet.has(d))
+    );
+  }
   if (acks.returnEventIds?.length) {
     const all = await getAllFromStore<LocalTripReturnEvent>('return_events');
     const set = new Set(acks.returnEventIds);
@@ -268,13 +291,14 @@ export async function idbMarkSyncedByIds(acks: {
 }
 
 export async function idbGetPendingSyncSnapshot() {
-  const [trips, gpsPoints, stops, deliveries, orders, customers, returnEvents] = await Promise.all([
+  const [trips, gpsPoints, stops, deliveries, orders, customers, districts, returnEvents] = await Promise.all([
     idbGetTrips(),
     idbGetAllGpsPoints(),
     idbGetAllStops(),
     idbGetUnsyncedDeliveries(),
     idbGetUnsyncedOrders(),
     idbGetUnsyncedCustomers(),
+    idbGetUnsyncedDistricts(),
     idbGetUnsyncedReturnEvents(),
   ]);
 
@@ -289,6 +313,7 @@ export async function idbGetPendingSyncSnapshot() {
     unsyncedDeliveries: deliveries,
     unsyncedOrders: orders,
     unsyncedCustomers: customers,
+    unsyncedDistricts: districts,
     unsyncedReturnEvents: returnEvents,
     totalPendingCount:
       unsyncedTrips.length +
@@ -297,6 +322,7 @@ export async function idbGetPendingSyncSnapshot() {
       deliveries.length +
       orders.length +
       customers.length +
+      districts.length +
       returnEvents.length,
   };
 }
@@ -352,6 +378,7 @@ export async function idbClearAllDriverData(): Promise<void> {
       }
       if (db.objectStoreNames.contains('meta')) {
         tx.objectStore('meta').delete('pending_customers');
+        tx.objectStore('meta').delete('pending_districts');
       }
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
@@ -365,5 +392,6 @@ export async function idbClearAllDriverData(): Promise<void> {
       localStorage.removeItem(`idb_fallback_${name}`);
     }
     localStorage.removeItem('idb_fallback_meta_pending_customers');
+    localStorage.removeItem('idb_fallback_meta_pending_districts');
   }
 }

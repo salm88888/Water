@@ -4,7 +4,7 @@
  * Miyahna - Customer Management (إدارة العملاء والخزانات في مأرب)
  */
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Users,
   Search,
@@ -13,6 +13,9 @@ import {
   MapPin,
   Droplet,
   Edit2,
+  Trash2,
+  AlertTriangle,
+  Loader2,
   Calendar,
   CheckCircle,
   X,
@@ -22,32 +25,49 @@ import {
 import { useApp } from '../../context/AppContext';
 import { Customer } from '../../types';
 import { LocationPickerMapModal } from '../common/LocationPickerMapModal';
+import { DistrictSelectField } from '../common/DistrictSelectField';
 
 export const CustomerManagement: React.FC = () => {
-  const { customers, addCustomer, updateCustomer, setSelectedCustomer, setManagerTab, settings } = useApp();
+  const {
+    customers,
+    allDistricts,
+    addCustomer,
+    updateCustomer,
+    deleteCustomer,
+    setSelectedCustomer,
+    setManagerTab,
+    settings,
+  } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDistrict, setSelectedDistrict] = useState<string>('all');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+  const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(null);
   const [isMapPickerOpen, setIsMapPickerOpen] = useState(false);
   const [hasPickedFromMap, setHasPickedFromMap] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const submitLockRef = useRef(false);
+  const deleteLockRef = useRef(false);
+
+  const defaultLat = settings.plantLocation?.lat || 15.4920;
+  const defaultLng = settings.plantLocation?.lng || 45.3620;
 
   // Form State
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
     altPhone: '',
-    district: 'حي الروضة',
+    district: '',
     addressDetails: '',
-    lat: 15.4712,
-    lng: 45.3340,
+    lat: defaultLat,
+    lng: defaultLng,
     tankCapacityLiters: 2000,
     tankRemainingLiters: 0,
     notes: '',
   });
-
-  const districts = ['حي الروضة', 'حي الشركة', 'المجمع الحكومي', 'حي السلام', 'حي المطار', 'حي الفاو', 'الخسيف', 'حصون آل جلال', 'جو النسيم'];
 
   const filteredCustomers = customers.filter((c) => {
     const matchesSearch =
@@ -65,10 +85,10 @@ export const CustomerManagement: React.FC = () => {
       name: '',
       phone: '',
       altPhone: '',
-      district: 'حي الروضة',
+      district: '',
       addressDetails: '',
-      lat: 15.4712,
-      lng: 45.3340,
+      lat: defaultLat,
+      lng: defaultLng,
       tankCapacityLiters: 2000,
       tankRemainingLiters: 0,
       notes: '',
@@ -86,7 +106,7 @@ export const CustomerManagement: React.FC = () => {
       name: c.name,
       phone: c.phone,
       altPhone: c.altPhone || '',
-      district: c.district,
+      district: c.district || '',
       addressDetails: c.addressDetails,
       lat: c.lat,
       lng: c.lng,
@@ -99,14 +119,40 @@ export const CustomerManagement: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name || !formData.phone) return;
+    if (submitLockRef.current || isSubmitting) return;
+    if (!formData.name.trim() || !formData.phone.trim() || !formData.district.trim()) return;
 
-    if (editingCustomer) {
-      await updateCustomer(editingCustomer.id, formData);
-    } else {
-      await addCustomer(formData);
+    submitLockRef.current = true;
+    setIsSubmitting(true);
+    try {
+      if (editingCustomer) {
+        await updateCustomer(editingCustomer.id, formData);
+      } else {
+        await addCustomer(formData);
+      }
+      setShowAddModal(false);
+    } finally {
+      submitLockRef.current = false;
+      setIsSubmitting(false);
     }
-    setShowAddModal(false);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!customerToDelete || deleteLockRef.current || isDeleting) return;
+    deleteLockRef.current = true;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await deleteCustomer(customerToDelete.id);
+      if (res.success) {
+        setCustomerToDelete(null);
+      } else {
+        setDeleteError(res.error || 'تعذر حذف العميل من قاعدة البيانات');
+      }
+    } finally {
+      deleteLockRef.current = false;
+      setIsDeleting(false);
+    }
   };
 
   return (
@@ -158,8 +204,8 @@ export const CustomerManagement: React.FC = () => {
             onChange={(e) => setSelectedDistrict(e.target.value)}
             className="px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
           >
-            <option value="all">جميع أحياء مأرب ({customers.length})</option>
-            {districts.map((d) => (
+            <option value="all">جميع مناطق مديرية الوادي ومأرب ({customers.length})</option>
+            {allDistricts.map((d) => (
               <option key={d} value={d}>
                 {d}
               </option>
@@ -262,6 +308,16 @@ export const CustomerManagement: React.FC = () => {
                         >
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>
+                        <button
+                          onClick={() => {
+                            setDeleteError(null);
+                            setCustomerToDelete(cust);
+                          }}
+                          className="p-1.5 text-slate-600 hover:text-rose-700 hover:bg-rose-50 rounded cursor-pointer"
+                          title="حذف العميل من قاعدة البيانات"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -325,27 +381,22 @@ export const CustomerManagement: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-700 font-semibold mb-1">المنطقة والحي بمأرب *</label>
-                  <select
-                    value={formData.district}
-                    onChange={(e) => setFormData({ ...formData, district: e.target.value })}
-                    className="w-full p-2.5 border border-slate-200 rounded-lg bg-white"
-                  >
-                    {districts.map((d) => (
-                      <option key={d} value={d}>
-                        {d}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <DistrictSelectField
+                  value={formData.district}
+                  onChange={(district) => setFormData({ ...formData, district })}
+                  districts={allDistricts}
+                  label="المنطقة والحي (مديرية الوادي - مأرب)"
+                  theme="light"
+                  disabled={isSubmitting}
+                />
                 <div>
                   <label className="block text-slate-700 font-semibold mb-1">سعة خزان العميل (لتر) *</label>
                   <select
                     value={formData.tankCapacityLiters}
                     onChange={(e) => setFormData({ ...formData, tankCapacityLiters: Number(e.target.value) })}
-                    className="w-full p-2.5 border border-slate-200 rounded-lg bg-white font-mono"
+                    disabled={isSubmitting}
+                    className="w-full p-2.5 border border-slate-200 rounded-lg bg-white font-mono disabled:opacity-60"
                   >
                     <option value={500}>500 لتر (خزان صغير)</option>
                     <option value={1000}>1,000 لتر</option>
@@ -387,7 +438,7 @@ export const CustomerManagement: React.FC = () => {
                         </span>
                       </h4>
                       <p className="text-[11px] text-slate-500 mt-0.5">
-                        انقر لوضع الدبوس على منزل العميل في مأرب لاستخراج الإحداثيات والحي بدقة
+                        انقر لوضع الدبوس على منزل العميل في مأرب لتحديد الإحداثيات بدقة (دون تغيير اسم المنطقة المدخل)
                       </p>
                     </div>
                   </div>
@@ -405,7 +456,9 @@ export const CustomerManagement: React.FC = () => {
                   <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg p-2 text-[11px] font-semibold flex items-center gap-2">
                     <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
                     <span>
-                      تم التقاط الموقع بنجاح: <strong>{formData.district}</strong> ({formData.lat.toFixed(6)}, {formData.lng.toFixed(6)})
+                      تم التقاط الإحداثيات بنجاح:{' '}
+                      {formData.district.trim() ? <strong>{formData.district} · </strong> : null}
+                      ({formData.lat.toFixed(6)}, {formData.lng.toFixed(6)})
                     </span>
                   </div>
                 ) : (
@@ -470,19 +523,75 @@ export const CustomerManagement: React.FC = () => {
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-3">
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={() => setShowAddModal(false)}
-                  className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 font-medium"
+                  className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 font-medium disabled:opacity-50"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-sky-700 text-white rounded-lg hover:bg-sky-800 font-semibold"
+                  disabled={isSubmitting}
+                  className="px-5 py-2 bg-sky-700 text-white rounded-lg hover:bg-sky-800 font-semibold flex items-center gap-2 disabled:opacity-60 cursor-pointer"
                 >
-                  {editingCustomer ? 'حفظ التعديلات' : 'تسجيل العميل'}
+                  {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>
+                    {isSubmitting
+                      ? editingCustomer
+                        ? 'جاري حفظ التعديلات...'
+                        : 'جاري تسجيل العميل...'
+                      : editingCustomer
+                      ? 'حفظ التعديلات'
+                      : 'تسجيل العميل'}
+                  </span>
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Customer Confirmation Modal */}
+      {customerToDelete && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 text-xs space-y-4">
+            <div className="w-12 h-12 bg-rose-100 text-rose-700 rounded-xl flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            <div className="text-center space-y-1.5">
+              <h4 className="font-bold text-base text-slate-900">تأكيد حذف العميل من قاعدة البيانات</h4>
+              <p className="text-slate-600 leading-relaxed">
+                هل أنت متأكد من حذف العميل <strong className="text-slate-900">{customerToDelete.name}</strong> (
+                <span className="font-mono">{customerToDelete.phone}</span> · {customerToDelete.district})؟
+              </p>
+              <p className="text-[11px] text-slate-500">
+                سيتم حذفه من سجل العملاء مع الاحتفاظ بالبيانات التاريخية للطلبات والفواتير السابقة.
+              </p>
+            </div>
+            {deleteError && (
+              <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-lg text-[11px] font-semibold">
+                {deleteError}
+              </div>
+            )}
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setCustomerToDelete(null)}
+                className="flex-1 py-2.5 border border-slate-200 rounded-lg font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleConfirmDelete}
+                className="flex-1 py-2.5 bg-rose-600 text-white rounded-lg font-bold hover:bg-rose-700 flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
+              >
+                {isDeleting && <Loader2 className="w-4 h-4 animate-spin" />}
+                <span>{isDeleting ? 'جاري الحذف...' : 'تأكيد الحذف نهائياً'}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -497,12 +606,11 @@ export const CustomerManagement: React.FC = () => {
         initialDistrict={formData.district}
         existingCustomers={customers}
         settings={settings}
-        onSelectLocation={({ lat, lng, district }) => {
+        onSelectLocation={({ lat, lng }) => {
           setFormData((prev) => ({
             ...prev,
             lat,
             lng,
-            district: district || prev.district,
           }));
           setHasPickedFromMap(true);
         }}

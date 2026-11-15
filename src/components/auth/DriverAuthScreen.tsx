@@ -4,7 +4,7 @@
  * Miyahna - Driver Login & Manager-Approved Account Request Screen (Permanent Mobile Shell)
  */
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Truck,
   Lock,
@@ -21,6 +21,8 @@ import {
   KeyRound,
   X,
   FileBadge,
+  Loader2,
+  Cloud,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { ManagerPinModal } from './ManagerPinModal';
@@ -35,7 +37,14 @@ export const DriverAuthScreen: React.FC = () => {
     logoutToRoleSelection,
     demoClearedNotice,
     dismissDemoClearedNotice,
+    cloudUser,
+    isCloudConnected,
+    isCloudSyncing,
+    signInWithGoogleAccount,
+    signOutGoogleAccount,
   } = useApp();
+
+  const [cloudLoading, setCloudLoading] = useState(false);
 
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [identifier, setIdentifier] = useState('');
@@ -55,20 +64,28 @@ export const DriverAuthScreen: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [registerSuccessMsg, setRegisterSuccessMsg] = useState<string | null>(null);
   const [showManagerPinModal, setShowManagerPinModal] = useState(false);
+  const submitLockRef = useRef(false);
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
     setErrorMsg(null);
     setIsSubmitting(true);
-    const res = await loginDriver(identifier, password);
-    setIsSubmitting(false);
-    if (!res.success) {
-      setErrorMsg(res.error || 'تعذر تسجيل الدخول');
+    try {
+      const res = await loginDriver(identifier, password);
+      if (!res.success) {
+        setErrorMsg(res.error || 'تعذر تسجيل الدخول');
+      }
+    } finally {
+      submitLockRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitLockRef.current) return;
     setErrorMsg(null);
     setRegisterSuccessMsg(null);
 
@@ -81,32 +98,37 @@ export const DriverAuthScreen: React.FC = () => {
       return;
     }
 
+    submitLockRef.current = true;
     setIsSubmitting(true);
-    const res = await registerDriverAccount({
-      name: regForm.name,
-      phone: regForm.phone,
-      username: regForm.username || regForm.phone,
-      licenseNumber: regForm.licenseNumber,
-      password: regForm.password,
-    });
-    setIsSubmitting(false);
+    try {
+      const res = await registerDriverAccount({
+        name: regForm.name,
+        phone: regForm.phone,
+        username: regForm.username || regForm.phone,
+        licenseNumber: regForm.licenseNumber,
+        password: regForm.password,
+      });
 
-    if (!res.success) {
-      setErrorMsg(res.error || 'تعذر إرسال طلب الحساب');
-      return;
+      if (!res.success) {
+        setErrorMsg(res.error || 'تعذر إرسال طلب الحساب');
+        return;
+      }
+
+      setRegisterSuccessMsg(
+        'تم إرسال طلب فتح الحساب بنجاح إلى المدير العام. يمكنك تسجيل الدخول فور اعتماد حسابك من لوحة المدير.'
+      );
+      setRegForm({
+        name: '',
+        phone: '',
+        username: '',
+        licenseNumber: '',
+        password: '',
+        confirmPassword: '',
+      });
+    } finally {
+      submitLockRef.current = false;
+      setIsSubmitting(false);
     }
-
-    setRegisterSuccessMsg(
-      'تم إرسال طلب فتح الحساب بنجاح إلى المدير العام. يمكنك تسجيل الدخول فور اعتماد حسابك من لوحة المدير.'
-    );
-    setRegForm({
-      name: '',
-      phone: '',
-      username: '',
-      licenseNumber: '',
-      password: '',
-      confirmPassword: '',
-    });
   };
 
   const handleOpenManager = () => {
@@ -165,6 +187,51 @@ export const DriverAuthScreen: React.FC = () => {
             <p className="text-xs text-slate-400 leading-relaxed">
               دخول السائق محمي بكلمة مرور ويتطلب اعتماد الحساب مسبقاً من قِبل المدير العام.
             </p>
+          </div>
+
+          {/* Cloud Account Link */}
+          <div className="bg-slate-800/60 border border-slate-700/80 rounded-xl p-2.5 flex items-center justify-between gap-2 text-[11px]">
+            <div className="flex items-center gap-2 min-w-0">
+              <Cloud
+                className={`w-4 h-4 shrink-0 ${
+                  isCloudConnected ? 'text-emerald-400' : 'text-sky-400'
+                }`}
+              />
+              <span className="text-slate-300 truncate">
+                {isCloudConnected && cloudUser
+                  ? `السحابة: ${cloudUser.email || cloudUser.displayName}`
+                  : 'الحفظ السحابي غير مرتبط'}
+              </span>
+            </div>
+            {isCloudConnected ? (
+              <button
+                type="button"
+                onClick={signOutGoogleAccount}
+                className="px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-700 text-slate-300 border border-slate-700 shrink-0"
+              >
+                فصل
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={cloudLoading || isCloudSyncing}
+                onClick={async () => {
+                  setCloudLoading(true);
+                  try {
+                    const res = await signInWithGoogleAccount();
+                    if (!res.success && res.error) {
+                      setErrorMsg(res.error);
+                    }
+                  } finally {
+                    setCloudLoading(false);
+                  }
+                }}
+                className="px-2.5 py-1 rounded-lg bg-sky-700 hover:bg-sky-600 disabled:opacity-60 text-white font-bold shrink-0 flex items-center gap-1"
+              >
+                {(cloudLoading || isCloudSyncing) && <Loader2 className="w-3 h-3 animate-spin" />}
+                <span>ربط Google</span>
+              </button>
+            )}
           </div>
 
           {/* Mode Tabs */}
@@ -259,7 +326,7 @@ export const DriverAuthScreen: React.FC = () => {
                 disabled={isSubmitting}
                 className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/40 transition-colors"
               >
-                <LogIn className="w-4 h-4" />
+                {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
                 <span>{isSubmitting ? 'جاري التحقق...' : 'دخول تطبيق السائق'}</span>
               </button>
             </form>
@@ -358,7 +425,7 @@ export const DriverAuthScreen: React.FC = () => {
                 disabled={isSubmitting}
                 className="w-full py-3 bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-sky-900/40 transition-colors"
               >
-                <UserPlus className="w-4 h-4" />
+                {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
                 <span>{isSubmitting ? 'جاري الإرسال...' : 'إرسال طلب فتح الحساب للمدير'}</span>
               </button>
             </form>

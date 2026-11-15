@@ -1,0 +1,492 @@
+{
+  "entities": {
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized system administrator UID record",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 254 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "serverCreatedAt", "serverUpdatedAt"]
+    },
+    "UserPublicProfile": {
+      "title": "UserPublicProfile",
+      "description": "Non-PII public profile for authenticated operator",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "role": { "type": "string", "enum": ["manager", "driver"], "maxLength": 20 },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "role", "ownerId", "serverCreatedAt", "serverUpdatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII record for authenticated user",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 254 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "ownerId", "serverCreatedAt", "serverUpdatedAt"]
+    },
+    "SystemSettingsDoc": {
+      "title": "SystemSettingsDoc",
+      "description": "Factory pricing, GPS thresholds, plant location, custom districts, and manager PIN",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "waterProductionCostPerLiter": { "type": "number" },
+        "defaultSellingPricePerLiter": { "type": "number" },
+        "dieselPricePerLiter": { "type": "number" },
+        "truckDieselConsumptionPerKm": { "type": "number" },
+        "maintenanceAllowancePerTrip": { "type": "number" },
+        "driverWagePerTrip": { "type": "number" },
+        "stopDetectionMinutes": { "type": "number" },
+        "minMovementSpeedKmH": { "type": "number" },
+        "stopRadiusMeters": { "type": "number" },
+        "plantGeofenceMeters": { "type": "number" },
+        "gpsSampleIntervalSeconds": { "type": "number" },
+        "gpsWeakAccuracyMeters": { "type": "number" },
+        "gpsGapSeconds": { "type": "number" },
+        "plantLocation": { "type": "object" },
+        "customDistricts": { "type": "array" },
+        "demoDataActive": { "type": "boolean" },
+        "demoDataClearedAt": { "type": "string", "maxLength": 64 },
+        "demoResetVersion": { "type": "number" },
+        "managerPin": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "waterProductionCostPerLiter",
+        "defaultSellingPricePerLiter",
+        "dieselPricePerLiter",
+        "plantLocation",
+        "serverCreatedAt",
+        "serverUpdatedAt"
+      ]
+    },
+    "TruckDoc": {
+      "title": "TruckDoc",
+      "description": "Tanker truck profile, driver assignment, and latest telemetry state",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "code": { "type": "string", "maxLength": 64 },
+        "plateNumber": { "type": "string", "maxLength": 64 },
+        "model": { "type": "string", "maxLength": 120 },
+        "maxCapacityLiters": { "type": "number" },
+        "currentWaterLiters": { "type": "number" },
+        "driverId": { "type": "string", "maxLength": 128 },
+        "driverName": { "type": "string", "maxLength": 120 },
+        "driverPhone": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "enum": ["idle", "loading", "on_trip", "maintenance"], "maxLength": 24 },
+        "lastLat": { "type": "number" },
+        "lastLng": { "type": "number" },
+        "lastSpeed": { "type": "number" },
+        "lastUpdateTimestamp": { "type": "string", "maxLength": 64 },
+        "lastEvent": { "type": "string", "maxLength": 32 },
+        "currentTripId": { "type": "string", "maxLength": 128 },
+        "odometerKm": { "type": "number" },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "plateNumber", "maxCapacityLiters", "status", "serverCreatedAt", "serverUpdatedAt"]
+    },
+    "DriverAccountDoc": {
+      "title": "DriverAccountDoc",
+      "description": "Driver authentication account and manager approval state",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "username": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "phone": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "password": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "licenseNumber": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected", "suspended"], "maxLength": 24 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "createdBy": { "type": "string", "enum": ["manager", "driver_self"], "maxLength": 24 },
+        "approvedAt": { "type": "string", "maxLength": 64 },
+        "approvedBy": { "type": "string", "maxLength": 120 },
+        "rejectedAt": { "type": "string", "maxLength": 64 },
+        "rejectionReason": { "type": "string", "maxLength": 500 },
+        "lastLoginAt": { "type": "string", "maxLength": 64 },
+        "isDemo": { "type": "boolean" },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "name", "username", "phone", "password", "status", "createdAt", "serverCreatedAt", "serverUpdatedAt"]
+    },
+    "CustomerDoc": {
+      "title": "CustomerDoc",
+      "description": "Water customer profile, tank capacity, area name, and GPS coordinates",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "customerId": { "type": "string", "maxLength": 64 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 150 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "altPhone": { "type": "string", "maxLength": 32 },
+        "district": { "type": "string", "minLength": 1, "maxLength": 150 },
+        "addressDetails": { "type": "string", "maxLength": 500 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "tankCapacityLiters": { "type": "number" },
+        "tankRemainingLiters": { "type": "number" },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "isActive": { "type": "boolean" },
+        "totalOrdersCount": { "type": "number" },
+        "totalLitersDelivered": { "type": "number" },
+        "isOfflineCreated": { "type": "boolean" },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "name", "phone", "district", "lat", "lng", "tankCapacityLiters", "createdAt", "serverCreatedAt", "serverUpdatedAt"]
+    },
+    "OrderDoc": {
+      "title": "OrderDoc",
+      "description": "Water delivery order linked to a customer",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "orderNumber": { "type": "string", "maxLength": 64 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "minLength": 1, "maxLength": 150 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "district": { "type": "string", "minLength": 1, "maxLength": 150 },
+        "addressDetails": { "type": "string", "maxLength": 500 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "tankCapacity": { "type": "number" },
+        "tankRemainingLiters": { "type": "number" },
+        "requestedLiters": { "type": "number" },
+        "pricePerLiter": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "source": { "type": "string", "maxLength": 32 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "scheduledDate": { "type": "string", "maxLength": 64 },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "maxLength": 32 },
+        "tripId": { "type": "string", "maxLength": 128 },
+        "isUrgent": { "type": "boolean" },
+        "duplicateWarning": { "type": "boolean" },
+        "duplicateMatchedOrderId": { "type": "string", "maxLength": 64 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "customerName", "phone", "district", "requestedLiters", "status", "createdAt", "serverCreatedAt", "serverUpdatedAt"]
+    },
+    "TripDoc": {
+      "title": "TripDoc",
+      "description": "Tanker delivery trip lifecycle, stops, GPS track, and financial metrics",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "tripNumber": { "type": "string", "maxLength": 64 },
+        "date": { "type": "string", "maxLength": 32 },
+        "truckId": { "type": "string", "maxLength": 128 },
+        "driverId": { "type": "string", "maxLength": 128 },
+        "driverName": { "type": "string", "maxLength": 120 },
+        "truckPlate": { "type": "string", "maxLength": 64 },
+        "initialLoadLiters": { "type": "number" },
+        "deliveredLiters": { "type": "number" },
+        "remainingLiters": { "type": "number" },
+        "status": { "type": "string", "maxLength": 40 },
+        "syncStatus": { "type": "string", "maxLength": 32 },
+        "createdByRole": { "type": "string", "enum": ["driver", "manager"], "maxLength": 20 },
+        "driverAcceptanceStatus": { "type": "string", "maxLength": 32 },
+        "driverRespondedAt": { "type": "string", "maxLength": 64 },
+        "driverResponseReason": { "type": "string", "maxLength": 500 },
+        "customerStops": { "type": "array" },
+        "orderIds": { "type": "array" },
+        "proposedAt": { "type": "string", "maxLength": 64 },
+        "submittedAt": { "type": "string", "maxLength": 64 },
+        "approvedAt": { "type": "string", "maxLength": 64 },
+        "approvedBy": { "type": "string", "maxLength": 120 },
+        "rejectedAt": { "type": "string", "maxLength": 64 },
+        "rejectedBy": { "type": "string", "maxLength": 120 },
+        "rejectionReason": { "type": "string", "maxLength": 500 },
+        "returnedForEditReason": { "type": "string", "maxLength": 500 },
+        "startedAt": { "type": "string", "maxLength": 64 },
+        "startLocation": { "type": "object" },
+        "returnedToPlantAt": { "type": "string", "maxLength": 64 },
+        "returnLocation": { "type": "object" },
+        "completedAt": { "type": "string", "maxLength": 64 },
+        "closedAt": { "type": "string", "maxLength": 64 },
+        "closedBy": { "type": "string", "maxLength": 120 },
+        "reconciledAt": { "type": "string", "maxLength": 64 },
+        "lastSyncedAt": { "type": "string", "maxLength": 64 },
+        "gpsPoints": { "type": "array" },
+        "detectedStops": { "type": "array" },
+        "gpsGaps": { "type": "array" },
+        "movingMinutes": { "type": "number" },
+        "stoppedMinutes": { "type": "number" },
+        "auditLogs": { "type": "array" },
+        "modificationRequests": { "type": "array" },
+        "estimatedDistanceKm": { "type": "number" },
+        "actualDistanceKm": { "type": "number" },
+        "estimatedFuelLiters": { "type": "number" },
+        "actualFuelLiters": { "type": "number" },
+        "fuelCost": { "type": "number" },
+        "productionCost": { "type": "number" },
+        "driverWageShare": { "type": "number" },
+        "maintenanceShare": { "type": "number" },
+        "otherExpensesShare": { "type": "number" },
+        "totalCost": { "type": "number" },
+        "actualCost": { "type": "number" },
+        "expectedRevenue": { "type": "number" },
+        "actualRevenue": { "type": "number" },
+        "expectedProfit": { "type": "number" },
+        "actualProfit": { "type": "number" },
+        "profitMarginPercent": { "type": "number" },
+        "capacityUtilizationPercent": { "type": "number" },
+        "departureRecommendation": { "type": "string", "maxLength": 32 },
+        "recommendationReason": { "type": "string", "maxLength": 500 },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "tripNumber", "status", "customerStops", "orderIds", "proposedAt", "serverCreatedAt", "serverUpdatedAt"]
+    },
+    "InvoiceDoc": {
+      "title": "InvoiceDoc",
+      "description": "Water delivery invoice record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "invoiceNumber": { "type": "string", "maxLength": 64 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "orderNumber": { "type": "string", "maxLength": 64 },
+        "tripId": { "type": "string", "maxLength": 128 },
+        "tripNumber": { "type": "string", "maxLength": 64 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 150 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "district": { "type": "string", "maxLength": 150 },
+        "requestedLiters": { "type": "number" },
+        "deliveredLiters": { "type": "number" },
+        "pricePerLiter": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "paidAmount": { "type": "number" },
+        "remainingAmount": { "type": "number" },
+        "paymentMethod": { "type": "string", "maxLength": 20 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "driverName": { "type": "string", "maxLength": 120 },
+        "isReconciled": { "type": "boolean" },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "invoiceNumber", "tripId", "customerName", "totalAmount", "createdAt", "serverCreatedAt", "serverUpdatedAt"]
+    },
+    "ReconciliationDoc": {
+      "title": "ReconciliationDoc",
+      "description": "Driver cash settlement and custody reconciliation record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reconciliationNumber": { "type": "string", "maxLength": 64 },
+        "tripId": { "type": "string", "maxLength": 128 },
+        "tripNumber": { "type": "string", "maxLength": 64 },
+        "driverId": { "type": "string", "maxLength": 128 },
+        "driverName": { "type": "string", "maxLength": 120 },
+        "date": { "type": "string", "maxLength": 32 },
+        "totalInvoicedAmount": { "type": "number" },
+        "totalCashCollected": { "type": "number" },
+        "actualCashHandedOver": { "type": "number" },
+        "authorizedExpensesDeducted": { "type": "number" },
+        "differenceAmount": { "type": "number" },
+        "status": { "type": "string", "maxLength": 32 },
+        "notes": { "type": "string", "maxLength": 1000 },
+        "approvedBy": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "reconciliationNumber", "tripId", "status", "createdAt", "serverCreatedAt", "serverUpdatedAt"]
+    },
+    "ExpenseDoc": {
+      "title": "ExpenseDoc",
+      "description": "Diesel, maintenance, and operational expense record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "expenseNumber": { "type": "string", "maxLength": 64 },
+        "date": { "type": "string", "maxLength": 32 },
+        "category": { "type": "string", "maxLength": 32 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "amount": { "type": "number" },
+        "liters": { "type": "number" },
+        "tripId": { "type": "string", "maxLength": 128 },
+        "tripNumber": { "type": "string", "maxLength": 64 },
+        "receiptNumber": { "type": "string", "maxLength": 64 },
+        "createdBy": { "type": "string", "maxLength": 120 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "expenseNumber", "date", "category", "description", "amount", "serverCreatedAt", "serverUpdatedAt"]
+    },
+    "GPSEventDoc": {
+      "title": "GPSEventDoc",
+      "description": "Recorded trip GPS milestone event",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "tripId": { "type": "string", "maxLength": 128 },
+        "tripNumber": { "type": "string", "maxLength": 64 },
+        "timestamp": { "type": "string", "maxLength": 64 },
+        "eventType": { "type": "string", "maxLength": 32 },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "speed": { "type": "number" },
+        "accuracy": { "type": "number" },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 150 },
+        "source": { "type": "string", "maxLength": 32 },
+        "sequenceNumber": { "type": "number" },
+        "isProcessed": { "type": "boolean" },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "tripId", "timestamp", "eventType", "lat", "lng", "serverCreatedAt", "serverUpdatedAt"]
+    },
+    "NotificationDoc": {
+      "title": "NotificationDoc",
+      "description": "Real-time manager and driver notification",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "targetRole": { "type": "string", "enum": ["manager", "driver"], "maxLength": 20 },
+        "actorRole": { "type": "string", "enum": ["manager", "driver", "system"], "maxLength": 20 },
+        "actorName": { "type": "string", "maxLength": 120 },
+        "category": { "type": "string", "maxLength": 48 },
+        "priority": { "type": "string", "maxLength": 32 },
+        "title": { "type": "string", "maxLength": 300 },
+        "message": { "type": "string", "maxLength": 1000 },
+        "tripId": { "type": "string", "maxLength": 128 },
+        "tripNumber": { "type": "string", "maxLength": 64 },
+        "orderId": { "type": "string", "maxLength": 128 },
+        "directiveId": { "type": "string", "maxLength": 128 },
+        "isRead": { "type": "boolean" },
+        "actionTab": { "type": "string", "maxLength": 40 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "createdAt", "targetRole", "title", "message", "isRead", "serverCreatedAt", "serverUpdatedAt"]
+    },
+    "DirectiveDoc": {
+      "title": "DirectiveDoc",
+      "description": "Manager-to-driver operational directive",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "createdBy": { "type": "string", "maxLength": 120 },
+        "title": { "type": "string", "maxLength": 300 },
+        "message": { "type": "string", "maxLength": 1500 },
+        "priority": { "type": "string", "enum": ["normal", "urgent"], "maxLength": 20 },
+        "tripId": { "type": "string", "maxLength": 128 },
+        "tripNumber": { "type": "string", "maxLength": 64 },
+        "customerId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 150 },
+        "status": { "type": "string", "enum": ["sent", "acknowledged", "completed"], "maxLength": 24 },
+        "acknowledgedAt": { "type": "string", "maxLength": 64 },
+        "completedAt": { "type": "string", "maxLength": 64 },
+        "driverReply": { "type": "string", "maxLength": 1000 },
+        "serverCreatedAt": { "type": "string", "format": "date-time" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "createdAt", "createdBy", "title", "message", "status", "serverCreatedAt", "serverUpdatedAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Admin UID registry"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublicProfile" },
+      "description": "Public operator display info"
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Private PII isolated from public user documents"
+    },
+    "/settings/{configId}": {
+      "schema": { "$ref": "#/entities/SystemSettingsDoc" },
+      "description": "Persistent plant settings, pricing, GPS rules, custom districts, and manager PIN"
+    },
+    "/trucks/{truckId}": {
+      "schema": { "$ref": "#/entities/TruckDoc" },
+      "description": "Persistent tanker truck assignment and telemetry state"
+    },
+    "/driverAccounts/{accountId}": {
+      "schema": { "$ref": "#/entities/DriverAccountDoc" },
+      "description": "Persistent driver login accounts and manager approvals"
+    },
+    "/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/CustomerDoc" },
+      "description": "Persistent water delivery customer directory"
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/OrderDoc" },
+      "description": "Persistent water delivery orders"
+    },
+    "/trips/{tripId}": {
+      "schema": { "$ref": "#/entities/TripDoc" },
+      "description": "Persistent trips, stops, GPS track points, and audit logs"
+    },
+    "/invoices/{invoiceId}": {
+      "schema": { "$ref": "#/entities/InvoiceDoc" },
+      "description": "Persistent delivery invoices"
+    },
+    "/reconciliations/{reconciliationId}": {
+      "schema": { "$ref": "#/entities/ReconciliationDoc" },
+      "description": "Persistent driver financial reconciliations"
+    },
+    "/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/ExpenseDoc" },
+      "description": "Persistent operational and diesel expenses"
+    },
+    "/gpsEvents/{gpsEventId}": {
+      "schema": { "$ref": "#/entities/GPSEventDoc" },
+      "description": "Persistent GPS milestone events"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/NotificationDoc" },
+      "description": "Persistent manager and driver notifications"
+    },
+    "/directives/{directiveId}": {
+      "schema": { "$ref": "#/entities/DirectiveDoc" },
+      "description": "Persistent manager directives to driver"
+    }
+  }
+}

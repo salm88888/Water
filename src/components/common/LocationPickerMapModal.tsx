@@ -1,24 +1,24 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
- * Miyahna - Interactive Location Picker Map Modal for Customers in Marib
- * Allows users to click, tap, or drag a pin to set precise customer GPS coordinates
+ * Miyahna - Interactive Google Maps Location Picker Modal for Customers & Plant in Marib
+ * Allows users to click, tap, or drag a pin to set precise GPS coordinates without altering entered district text
  */
 
-import React, { useEffect, useRef, useState } from 'react';
-import L from 'leaflet';
+import React, { useEffect, useState } from 'react';
 import {
-  MapPin,
-  Check,
-  X,
-  Crosshair,
-  Compass,
-  Building2,
-  Navigation,
-  Info,
-  Layers,
-} from 'lucide-react';
+  Map as GoogleMap,
+  AdvancedMarker,
+  InfoWindow,
+  MapMouseEvent,
+  useMap,
+  useAdvancedMarkerRef,
+  useApiIsLoaded,
+} from '@vis.gl/react-google-maps';
+import { MapPin, Check, X, Crosshair, Compass, Info } from 'lucide-react';
 import { Customer, SystemSettings } from '../../types';
+import { AL_WADI_DISTRICTS } from '../../lib/alwadi-districts';
+import { useGoogleMapsConfig } from './GoogleMapsProvider';
 
 interface LocationPickerMapModalProps {
   isOpen: boolean;
@@ -26,7 +26,6 @@ interface LocationPickerMapModalProps {
   onSelectLocation: (location: {
     lat: number;
     lng: number;
-    district?: string;
     addressDetails?: string;
   }) => void;
   initialLat?: number;
@@ -38,30 +37,215 @@ interface LocationPickerMapModalProps {
   mode?: 'customer' | 'plant';
 }
 
-// Known Marib Neighborhood Centroids for quick snapping & proximity detection
-const MARIB_DISTRICTS: { name: string; lat: number; lng: number }[] = [
-  { name: 'حي الروضة', lat: 15.4712, lng: 45.3340 },
-  { name: 'حي الشركة', lat: 15.4590, lng: 45.3180 },
-  { name: 'المجمع الحكومي', lat: 15.4610, lng: 45.3260 },
-  { name: 'حي السلام', lat: 15.4780, lng: 45.3420 },
-  { name: 'حي المطار', lat: 15.4850, lng: 45.3510 },
-  { name: 'حي الفاو', lat: 15.4410, lng: 45.3090 },
-  { name: 'الخسيف', lat: 15.4510, lng: 45.3390 },
-  { name: 'حصون آل جلال', lat: 15.4920, lng: 45.3620 },
-  { name: 'جو النسيم', lat: 15.4680, lng: 45.3150 },
-];
+const ATTRIBUTION_IDS = ['gmp_mcp_codeassist_v1_aistudio'];
 
-function getClosestDistrict(lat: number, lng: number): string {
-  let closest = MARIB_DISTRICTS[0].name;
-  let minDist = Infinity;
-  for (const d of MARIB_DISTRICTS) {
-    const dist = Math.hypot(d.lat - lat, d.lng - lng);
-    if (dist < minDist) {
-      minDist = dist;
-      closest = d.name;
+function CameraPanController({
+  target,
+}: {
+  target: { lat: number; lng: number; zoom: number; seq: number } | null;
+}) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!map || !target) return;
+    map.panTo({ lat: target.lat, lng: target.lng });
+    map.setZoom(target.zoom);
+  }, [map, target]);
+
+  return null;
+}
+
+function PlantRefPin({
+  plantLocation,
+  isOpen,
+  onToggle,
+  onClose,
+}: {
+  plantLocation: SystemSettings['plantLocation'];
+  isOpen: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+}) {
+  const [markerRef, marker] = useAdvancedMarkerRef();
+
+  return (
+    <>
+      <AdvancedMarker
+        ref={markerRef}
+        position={{ lat: plantLocation.lat, lng: plantLocation.lng }}
+        title={plantLocation.name}
+        onClick={onToggle}
+        zIndex={15}
+      >
+        <div className="flex items-center justify-center w-8 h-8 bg-sky-800 text-white rounded-full shadow-md border-2 border-white text-xs font-bold cursor-pointer">
+          🏢
+        </div>
+      </AdvancedMarker>
+
+      {isOpen && marker && (
+        <InfoWindow anchor={marker} onCloseClick={onClose} maxWidth={210}>
+          <div dir="rtl" className="text-right font-sans text-xs p-0.5">
+            <strong>{plantLocation.name}</strong>
+            <br />
+            <span>موقع المصنع المركزي</span>
+          </div>
+        </InfoWindow>
+      )}
+    </>
+  );
+}
+
+function NeighborPin({
+  customer,
+  isOpen,
+  onToggle,
+  onClose,
+}: {
+  customer: Customer;
+  isOpen: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+}) {
+  const [markerRef, marker] = useAdvancedMarkerRef();
+
+  return (
+    <>
+      <AdvancedMarker
+        ref={markerRef}
+        position={{ lat: customer.lat, lng: customer.lng }}
+        title={`${customer.name} (${customer.district})`}
+        onClick={onToggle}
+        zIndex={10}
+      >
+        <div className="w-3.5 h-3.5 bg-slate-400 hover:bg-sky-500 rounded-full border-2 border-white shadow-xs cursor-pointer" />
+      </AdvancedMarker>
+
+      {isOpen && marker && (
+        <InfoWindow anchor={marker} onCloseClick={onClose} maxWidth={210}>
+          <div dir="rtl" className="text-right font-sans text-xs p-0.5">
+            <strong>{customer.name}</strong>
+            <br />
+            <span>
+              {customer.district} - خزان {customer.tankCapacityLiters}L
+            </span>
+          </div>
+        </InfoWindow>
+      )}
+    </>
+  );
+}
+
+function PickerMapCanvas({
+  isPlantMode,
+  customerName,
+  settings,
+  existingCustomers,
+  currentLat,
+  currentLng,
+  cameraTarget,
+  onCoordinatesChange,
+}: {
+  isPlantMode: boolean;
+  customerName: string;
+  settings: SystemSettings;
+  existingCustomers: Customer[];
+  currentLat: number;
+  currentLng: number;
+  cameraTarget: { lat: number; lng: number; zoom: number; seq: number } | null;
+  onCoordinatesChange: (lat: number, lng: number) => void;
+}) {
+  const isApiLoaded = useApiIsLoaded();
+  const [activeInfoId, setActiveInfoId] = useState<string | null>(null);
+
+  const pinBg = isPlantMode ? 'bg-sky-700' : 'bg-rose-600';
+  const pinEmoji = isPlantMode ? '🏢' : '🚰';
+  const pinText = isPlantMode
+    ? `📍 ${customerName || settings.plantLocation.name}`
+    : `📍 خزان ${customerName}`;
+
+  const handleMapClick = (e: MapMouseEvent) => {
+    setActiveInfoId(null);
+    const latLng = e.detail?.latLng;
+    if (latLng) {
+      onCoordinatesChange(latLng.lat, latLng.lng);
     }
+  };
+
+  const handlePinDragEnd = (e: google.maps.MapMouseEvent) => {
+    if (e.latLng) {
+      onCoordinatesChange(e.latLng.lat(), e.latLng.lng());
+    }
+  };
+
+  if (!isApiLoaded) {
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-slate-100 text-xs text-slate-500">
+        جاري تحميل خرائط جوجل لتحديد الموقع...
+      </div>
+    );
   }
-  return closest;
+
+  return (
+    <GoogleMap
+      mapId="DEMO_MAP_ID"
+      defaultCenter={{ lat: currentLat, lng: currentLng }}
+      defaultZoom={15}
+      gestureHandling="greedy"
+      mapTypeControl={true}
+      streetViewControl={false}
+      fullscreenControl={false}
+      internalUsageAttributionIds={ATTRIBUTION_IDS}
+      style={{ width: '100%', height: '100%' }}
+      onClick={handleMapClick}
+    >
+      <CameraPanController target={cameraTarget} />
+
+      {!isPlantMode && (
+        <PlantRefPin
+          plantLocation={settings.plantLocation}
+          isOpen={activeInfoId === 'plant-ref'}
+          onToggle={() => setActiveInfoId((p) => (p === 'plant-ref' ? null : 'plant-ref'))}
+          onClose={() => setActiveInfoId(null)}
+        />
+      )}
+
+      {existingCustomers
+        .filter((cust) => Boolean(cust.lat && cust.lng))
+        .map((cust) => (
+          <NeighborPin
+            key={cust.id}
+            customer={cust}
+            isOpen={activeInfoId === `nbr-${cust.id}`}
+            onToggle={() => setActiveInfoId((p) => (p === `nbr-${cust.id}` ? null : `nbr-${cust.id}`))}
+            onClose={() => setActiveInfoId(null)}
+          />
+        ))}
+
+      <AdvancedMarker
+        position={{ lat: currentLat, lng: currentLng }}
+        draggable={true}
+        onDragEnd={handlePinDragEnd}
+        title={pinText}
+        zIndex={50}
+      >
+        <div className="relative flex items-center justify-center cursor-grab active:cursor-grabbing">
+          <div className="absolute -top-10 flex flex-col items-center animate-bounce pointer-events-none">
+            <div
+              className={`${pinBg} text-white text-[11px] font-bold px-2 py-0.5 rounded-full shadow-md whitespace-nowrap border border-white`}
+            >
+              {pinText}
+            </div>
+            <div className={`w-2 h-2 ${pinBg} rotate-45 -mt-1 border-r border-b border-white`} />
+          </div>
+          <div
+            className={`w-9 h-9 ${pinBg} text-white rounded-full shadow-xl border-2 border-white flex items-center justify-center text-sm font-bold`}
+          >
+            {pinEmoji}
+          </div>
+        </div>
+      </AdvancedMarker>
+    </GoogleMap>
+  );
 }
 
 export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
@@ -77,157 +261,41 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
   mode = 'customer',
 }) => {
   const isPlantMode = mode === 'plant';
-  const mapContainerRef = useRef<HTMLDivElement>(null);
-  const mapInstanceRef = useRef<L.Map | null>(null);
-  const pinMarkerRef = useRef<L.Marker | null>(null);
+  const { hasKey, isLoadingKey, loadError } = useGoogleMapsConfig();
 
-  const defaultLat = initialLat || settings.plantLocation.lat || 15.4645;
-  const defaultLng = initialLng || settings.plantLocation.lng || 45.3235;
+  const defaultLat = initialLat || settings.plantLocation.lat || 15.492;
+  const defaultLng = initialLng || settings.plantLocation.lng || 45.362;
 
   const [currentLat, setCurrentLat] = useState<number>(defaultLat);
   const [currentLng, setCurrentLng] = useState<number>(defaultLng);
-  const [detectedDistrict, setDetectedDistrict] = useState<string>(
-    initialDistrict || getClosestDistrict(defaultLat, defaultLng)
-  );
+  const [activeJumpName, setActiveJumpName] = useState<string | null>(null);
   const [isLocating, setIsLocating] = useState<boolean>(false);
   const [gpsMessage, setGpsMessage] = useState<string | null>(null);
+  const [cameraTarget, setCameraTarget] = useState<{
+    lat: number;
+    lng: number;
+    zoom: number;
+    seq: number;
+  } | null>(null);
 
-  // Initialize or update map when opened
   useEffect(() => {
-    if (!isOpen) {
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove();
-        mapInstanceRef.current = null;
-        pinMarkerRef.current = null;
-      }
-      return;
-    }
-
-    // Set initial position
+    if (!isOpen) return;
     const startLat = initialLat && initialLat !== 0 ? initialLat : defaultLat;
     const startLng = initialLng && initialLng !== 0 ? initialLng : defaultLng;
     setCurrentLat(startLat);
     setCurrentLng(startLng);
-    setDetectedDistrict(getClosestDistrict(startLat, startLng));
+    setActiveJumpName(null);
+    setCameraTarget({ lat: startLat, lng: startLng, zoom: 15, seq: Date.now() });
+  }, [isOpen, initialLat, initialLng, defaultLat, defaultLng]);
 
-    // Delay map initialization slightly for modal transition
-    const timer = setTimeout(() => {
-      if (!mapContainerRef.current) return;
-
-      if (!mapInstanceRef.current) {
-        const map = L.map(mapContainerRef.current, {
-          center: [startLat, startLng],
-          zoom: 15,
-          zoomControl: true,
-        });
-
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-          attribution: '&copy; OpenStreetMap | مأرب - اليمن',
-          maxZoom: 19,
-        }).addTo(map);
-
-        // Water Plant Marker for reference (hidden when dragging the plant pin itself)
-        if (!isPlantMode) {
-          const plantIcon = L.divIcon({
-            className: 'plant-reference-pin',
-            html: `
-              <div class="flex items-center justify-center w-8 h-8 bg-sky-800 text-white rounded-full shadow-md border-2 border-white text-xs font-bold" title="${settings.plantLocation.name}">
-                🏢
-              </div>
-            `,
-            iconSize: [32, 32],
-            iconAnchor: [16, 16],
-          });
-          L.marker([settings.plantLocation.lat, settings.plantLocation.lng], { icon: plantIcon })
-            .addTo(map)
-            .bindPopup(`<strong>${settings.plantLocation.name}</strong><br/>موقع المصنع المركزي`);
-        }
-
-        // Neighboring Customers for reference
-        existingCustomers.forEach((cust) => {
-          if (!cust.lat || !cust.lng) return;
-          const neighborIcon = L.divIcon({
-            className: 'neighbor-pin',
-            html: `
-              <div class="w-3.5 h-3.5 bg-slate-400 hover:bg-sky-500 rounded-full border-2 border-white shadow-xs" title="${cust.name} (${cust.district})"></div>
-            `,
-            iconSize: [14, 14],
-            iconAnchor: [7, 7],
-          });
-          L.marker([cust.lat, cust.lng], { icon: neighborIcon })
-            .addTo(map)
-            .bindPopup(`<strong>${cust.name}</strong><br/>${cust.district} - خزان ${cust.tankCapacityLiters}L`);
-        });
-
-        // The Draggable Pin (Customer or Plant)
-        const pinBg = isPlantMode ? 'bg-sky-700' : 'bg-rose-600';
-        const pinEmoji = isPlantMode ? '🏢' : '🚰';
-        const pinText = isPlantMode ? `📍 ${customerName || settings.plantLocation.name}` : `📍 خزان ${customerName}`;
-
-        const customerPinIcon = L.divIcon({
-          className: 'active-draggable-customer-pin',
-          html: `
-            <div class="relative flex items-center justify-center">
-              <div class="absolute -top-10 flex flex-col items-center animate-bounce">
-                <div class="${pinBg} text-white text-[11px] font-bold px-2 py-0.5 rounded-full shadow-md whitespace-nowrap border border-white">
-                  ${pinText}
-                </div>
-                <div class="w-2 h-2 ${pinBg} rotate-45 -mt-1 border-r border-b border-white"></div>
-              </div>
-              <div class="w-9 h-9 ${pinBg} text-white rounded-full shadow-xl border-3 border-white flex items-center justify-center text-sm font-bold">
-                ${pinEmoji}
-              </div>
-              <div class="absolute -bottom-1 w-4 h-1.5 bg-black/30 rounded-full blur-xs"></div>
-            </div>
-          `,
-          iconSize: [36, 36],
-          iconAnchor: [18, 18],
-        });
-
-        const pinMarker = L.marker([startLat, startLng], {
-          icon: customerPinIcon,
-          draggable: true,
-          autoPan: true,
-        }).addTo(map);
-
-        // Update coordinates on drag
-        pinMarker.on('dragend', () => {
-          const pos = pinMarker.getLatLng();
-          setCurrentLat(pos.lat);
-          setCurrentLng(pos.lng);
-          const district = getClosestDistrict(pos.lat, pos.lng);
-          setDetectedDistrict(district);
-        });
-
-        // Click anywhere on map to move pin
-        map.on('click', (e: L.LeafletMouseEvent) => {
-          const { lat, lng } = e.latlng;
-          pinMarker.setLatLng([lat, lng]);
-          setCurrentLat(lat);
-          setCurrentLng(lng);
-          const district = getClosestDistrict(lat, lng);
-          setDetectedDistrict(district);
-        });
-
-        pinMarkerRef.current = pinMarker;
-        mapInstanceRef.current = map;
-      }
-    }, 150);
-
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [isOpen]);
-
-  const handleDistrictJump = (district: typeof MARIB_DISTRICTS[0]) => {
-    setCurrentLat(district.lat);
-    setCurrentLng(district.lng);
-    setDetectedDistrict(district.name);
-
-    if (mapInstanceRef.current && pinMarkerRef.current) {
-      mapInstanceRef.current.flyTo([district.lat, district.lng], 16, { duration: 1 });
-      pinMarkerRef.current.setLatLng([district.lat, district.lng]);
-    }
+  const handleDistrictJump = (district: (typeof AL_WADI_DISTRICTS)[0]) => {
+    setActiveJumpName(district.name);
+    setCameraTarget({
+      lat: district.lat,
+      lng: district.lng,
+      zoom: 16,
+      seq: Date.now(),
+    });
   };
 
   const handleGetCurrentLocation = () => {
@@ -245,20 +313,12 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
         setIsLocating(false);
         setCurrentLat(latitude);
         setCurrentLng(longitude);
-        const district = getClosestDistrict(latitude, longitude);
-        setDetectedDistrict(district);
         setGpsMessage('تم تحديد موقعك بدقة من الـ GPS');
-
-        if (mapInstanceRef.current && pinMarkerRef.current) {
-          mapInstanceRef.current.flyTo([latitude, longitude], 17);
-          pinMarkerRef.current.setLatLng([latitude, longitude]);
-        }
-
+        setCameraTarget({ lat: latitude, lng: longitude, zoom: 17, seq: Date.now() });
         setTimeout(() => setGpsMessage(null), 3500);
       },
-      (err) => {
+      () => {
         setIsLocating(false);
-        // Default graceful Marib snap
         setGpsMessage('تعذر التقاط الـ GPS تلقائياً، يمكنك وضع الدبوس يدوياً على الخريطة');
         setTimeout(() => setGpsMessage(null), 3500);
       },
@@ -270,7 +330,6 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
     onSelectLocation({
       lat: Number(currentLat.toFixed(6)),
       lng: Number(currentLng.toFixed(6)),
-      district: detectedDistrict,
     });
     onClose();
   };
@@ -283,13 +342,19 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
         {/* Modal Header */}
         <div className="p-3.5 sm:p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
           <div className="flex items-center gap-2.5">
-            <div className={`w-9 h-9 rounded-xl ${isPlantMode ? 'bg-sky-700' : 'bg-rose-600'} text-white flex items-center justify-center shrink-0 shadow-xs`}>
+            <div
+              className={`w-9 h-9 rounded-xl ${isPlantMode ? 'bg-sky-700' : 'bg-rose-600'} text-white flex items-center justify-center shrink-0 shadow-xs`}
+            >
               <MapPin className="w-5 h-5" />
             </div>
             <div>
               <h3 className="font-bold text-sm sm:text-base text-slate-900 flex items-center gap-2">
-                <span>{isPlantMode ? 'تحديد موقع مصنع المياه على خريطة مأرب' : 'تحديد موقع خزان العميل على خريطة مأرب'}</span>
-                <span className={`text-[10px] ${isPlantMode ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800'} font-bold px-2 py-0.5 rounded-full`}>
+                <span>
+                  {isPlantMode ? 'تحديد موقع مصنع المياه على خريطة مأرب' : 'تحديد موقع خزان العميل على خريطة مأرب'}
+                </span>
+                <span
+                  className={`text-[10px] ${isPlantMode ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800'} font-bold px-2 py-0.5 rounded-full`}
+                >
                   {isPlantMode ? 'موقع المصنع القابل للتغيير' : 'وضع الدبوس المباشر'}
                 </span>
               </h3>
@@ -301,6 +366,7 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
             className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 rounded-lg transition-colors cursor-pointer"
           >
@@ -308,19 +374,19 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
           </button>
         </div>
 
-        {/* Quick Neighborhood Selector Tabs */}
+        {/* Quick Map Navigation Bar (camera pan only - does not change entered region name) */}
         <div className="bg-white px-3 py-2 border-b border-slate-100 flex items-center gap-1.5 overflow-x-auto no-scrollbar text-xs">
           <span className="text-[11px] font-bold text-slate-500 whitespace-nowrap flex items-center gap-1">
             <Compass className="w-3.5 h-3.5 text-sky-700" />
-            <span>الانتقال السريع للحي:</span>
+            <span>تحريك الخريطة السريع:</span>
           </span>
-          {MARIB_DISTRICTS.map((dist) => (
+          {AL_WADI_DISTRICTS.map((dist) => (
             <button
               key={dist.name}
               type="button"
               onClick={() => handleDistrictJump(dist)}
               className={`px-2.5 py-1 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
-                detectedDistrict === dist.name
+                activeJumpName === dist.name
                   ? 'bg-sky-700 text-white shadow-xs'
                   : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
               }`}
@@ -332,7 +398,29 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
 
         {/* Map Container Area */}
         <div className="relative flex-1 bg-slate-100">
-          <div ref={mapContainerRef} className="w-full h-full z-0" />
+          {hasKey && !loadError ? (
+            <div className="w-full h-full">
+              <PickerMapCanvas
+                isPlantMode={isPlantMode}
+                customerName={customerName}
+                settings={settings}
+                existingCustomers={existingCustomers}
+                currentLat={currentLat}
+                currentLng={currentLng}
+                cameraTarget={cameraTarget}
+                onCoordinatesChange={(lat, lng) => {
+                  setCurrentLat(lat);
+                  setCurrentLng(lng);
+                }}
+              />
+            </div>
+          ) : (
+            <div className="w-full h-full flex items-center justify-center p-4 text-center text-xs text-slate-600">
+              {isLoadingKey
+                ? 'جاري تهيئة خرائط جوجل...'
+                : 'تعذر عرض الخريطة الآن — يمكنك استخدام زر "موقعي الحالي GPS" لالتقاط الإحداثيات.'}
+            </div>
+          )}
 
           {/* Floating Crosshair Center Button */}
           <div className="absolute top-3 right-3 z-10 flex flex-col gap-2">
@@ -365,9 +453,15 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
                 <span className="w-2 h-2 rounded-full bg-rose-600 animate-pulse"></span>
                 <span>الإحداثيات الملتقطة</span>
               </span>
-              <span className="font-bold text-sky-800 bg-sky-50 px-2 py-0.5 rounded text-[11px]">
-                {detectedDistrict}
-              </span>
+              {initialDistrict?.trim() ? (
+                <span className="font-bold text-sky-800 bg-sky-50 px-2 py-0.5 rounded text-[11px] truncate max-w-[150px]">
+                  {initialDistrict.trim()}
+                </span>
+              ) : (
+                <span className="text-[10px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                  إحداثيات GPS فقط
+                </span>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-2 text-[11px] font-mono text-slate-600">
@@ -395,7 +489,12 @@ export const LocationPickerMapModal: React.FC<LocationPickerMapModalProps> = ({
               ✓
             </div>
             <span>
-              الحي المقترح: <strong className="text-slate-900">{detectedDistrict}</strong> · الدبوس جاهز للاعتماد
+              {initialDistrict?.trim() ? (
+                <>
+                  المنطقة المدخلة: <strong className="text-slate-900">{initialDistrict.trim()}</strong> (لن تتغير) ·{' '}
+                </>
+              ) : null}
+              الدبوس جاهز لاعتماد الإحداثيات فقط
             </span>
           </div>
 

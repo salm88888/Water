@@ -4,7 +4,7 @@
  * Miyahna - Orders Reception & Duplicate Detection Management
  */
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   ShoppingCart,
   Search,
@@ -20,6 +20,7 @@ import {
   ArrowRight,
   GitMerge,
   ExternalLink,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Order, OrderSource, OrderStatus } from '../../types';
@@ -34,6 +35,8 @@ export const OrderManagement: React.FC<OrderManagementProps> = ({ onOpenNewOrder
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [selectedSource, setSelectedSource] = useState<string>('all');
+  const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
+  const statusLockRef = useRef(false);
 
   const filteredOrders = orders.filter((o) => {
     const matchesSearch =
@@ -53,7 +56,15 @@ export const OrderManagement: React.FC<OrderManagementProps> = ({ onOpenNewOrder
   ).length;
 
   const handleStatusChange = async (orderId: string, newStatus: OrderStatus) => {
-    await updateOrder(orderId, { status: newStatus });
+    if (statusLockRef.current) return;
+    statusLockRef.current = true;
+    setUpdatingOrderId(orderId);
+    try {
+      await updateOrder(orderId, { status: newStatus });
+    } finally {
+      statusLockRef.current = false;
+      setUpdatingOrderId(null);
+    }
   };
 
   return (
@@ -205,20 +216,23 @@ export const OrderManagement: React.FC<OrderManagementProps> = ({ onOpenNewOrder
                       {new Date(ord.createdAt).toLocaleTimeString('ar-YE', { hour: '2-digit', minute: '2-digit' })}
                     </td>
                     <td className="py-3 px-4 text-center">
-                      <select
-                        value={ord.status}
-                        onChange={(e) => handleStatusChange(ord.id, e.target.value as OrderStatus)}
-                        disabled={isDelivered}
-                        className="text-[11px] border border-slate-200 rounded px-2 py-1 bg-white text-slate-700 disabled:opacity-50"
-                      >
-                        <option value="waiting_clustering">انتظار تجميع</option>
-                        <option value="confirmed">تأكيد الطلب</option>
-                        <option value="approved">اعتماد خروج</option>
-                        <option value="in_delivery">قيد التوصيل</option>
-                        <option value="delivered">تم التسليم</option>
-                        <option value="postponed">تأجيل</option>
-                        <option value="cancelled">إلغاء</option>
-                      </select>
+                      <div className="inline-flex items-center gap-1">
+                        {updatingOrderId === ord.id && <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-700" />}
+                        <select
+                          value={ord.status}
+                          onChange={(e) => handleStatusChange(ord.id, e.target.value as OrderStatus)}
+                          disabled={isDelivered || updatingOrderId === ord.id}
+                          className="text-[11px] border border-slate-200 rounded px-2 py-1 bg-white text-slate-700 disabled:opacity-50"
+                        >
+                          <option value="waiting_clustering">انتظار تجميع</option>
+                          <option value="confirmed">تأكيد الطلب</option>
+                          <option value="approved">اعتماد خروج</option>
+                          <option value="in_delivery">قيد التوصيل</option>
+                          <option value="delivered">تم التسليم</option>
+                          <option value="postponed">تأجيل</option>
+                          <option value="cancelled">إلغاء</option>
+                        </select>
+                      </div>
                     </td>
                   </tr>
                 );

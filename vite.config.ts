@@ -55,20 +55,10 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
           cleanupOutdatedCaches: true,
           runtimeCaching: [
-            {
-              urlPattern: /^https:\/\/[abc]\.tile\.openstreetmap\.org\/.*/i,
-              handler: 'StaleWhileRevalidate',
-              options: {
-                cacheName: 'osm-tiles-cache',
-                expiration: {
-                  maxEntries: 250,
-                  maxAgeSeconds: 60 * 60 * 24 * 14,
-                },
-              },
-            },
             {
               urlPattern: /^\/api\/(customers|orders|trips|settings|truck|state)$/i,
               handler: 'NetworkFirst',

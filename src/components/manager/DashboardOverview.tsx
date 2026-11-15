@@ -23,6 +23,8 @@ import {
   BookOpen,
   X,
   PlayCircle,
+  Square,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { MaribMap } from '../common/MaribMap';
@@ -36,11 +38,13 @@ export const DashboardOverview: React.FC = () => {
     truck,
     settings,
     clusterProposals,
+    stopTripTracking,
     setManagerTab,
     setViewMode,
   } = useApp();
 
   const [showGuideModal, setShowGuideModal] = useState(false);
+  const [isStoppingActiveTrip, setIsStoppingActiveTrip] = useState(false);
 
   // Metrics
   const newOrders = orders.filter((o) => o.status === 'new').length;
@@ -285,8 +289,35 @@ export const DashboardOverview: React.FC = () => {
               </div>
             </div>
 
-            {/* Quick action button to Trips & Driver */}
-            <div className="mt-4 pt-3 border-t border-slate-100 flex gap-2">
+            {/* Quick action button to Trips, Stop Tracking & Driver */}
+            <div className="mt-4 pt-3 border-t border-slate-100 flex flex-wrap gap-2">
+              {activeTrip && (
+                <button
+                  type="button"
+                  disabled={isStoppingActiveTrip}
+                  onClick={async () => {
+                    if (isStoppingActiveTrip) return;
+                    setIsStoppingActiveTrip(true);
+                    try {
+                      await stopTripTracking(activeTrip.id, 'تم إيقاف التتبع من لوحة المؤشرات');
+                    } finally {
+                      setIsStoppingActiveTrip(false);
+                    }
+                  }}
+                  className="w-full py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5"
+                >
+                  {isStoppingActiveTrip ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Square className="w-3.5 h-3.5 fill-white" />
+                  )}
+                  <span>
+                    {isStoppingActiveTrip
+                      ? 'جاري إيقاف التتبع...'
+                      : `إيقاف التتبع (${activeTrip.tripNumber})`}
+                  </span>
+                </button>
+              )}
               <button
                 onClick={() => setManagerTab('trips')}
                 className="flex-1 py-2 bg-amber-50 text-amber-800 border border-amber-200 rounded-lg text-xs font-semibold hover:bg-amber-100 transition-colors flex items-center justify-center gap-1.5"
@@ -503,7 +534,7 @@ export const DashboardOverview: React.FC = () => {
                 <div>
                   <div className="font-bold text-slate-900 text-xs">إعداد المخطط واعتماد رحلة الوايت من المدير</div>
                   <p className="text-[11px] text-slate-600 mt-0.5">
-                    يقوم المدير بإعداد مخطط الوجهات من <strong>«إدارة الرحلات»</strong> أو <strong>«التجميع الذكي»</strong> واعتماده وإرساله للسائق للموافقة والتنفيذ.
+                    يقوم المدير بإعداد مخطط الوجهات من <strong>«إدارة الرحلات»</strong> أو <strong>«التجميع الذكي»</strong> واعتماده ليبدأ التتبع تلقائياً عند السائق.
                   </p>
                 </div>
               </div>
@@ -511,9 +542,9 @@ export const DashboardOverview: React.FC = () => {
               <div className="p-3 bg-slate-50 border border-slate-100 rounded-xl flex items-start gap-3">
                 <span className="w-6 h-6 rounded-full bg-sky-700 text-white font-bold text-xs flex items-center justify-center shrink-0">5</span>
                 <div>
-                  <div className="font-bold text-slate-900 text-xs">تتبع GPS التلقائي والعمل دون إنترنت</div>
+                  <div className="font-bold text-slate-900 text-xs">تتبع GPS التلقائي تحت تحكم المدير والعمل دون إنترنت</div>
                   <p className="text-[11px] text-slate-600 mt-0.5">
-                    يوافق السائق على الرحلة ويبدأها فتعمل حركة التتبع بالـ GPS تلقائياً حتى دون إنترنت عبر IndexedDB، وتتم المزامنة التلقائية فور عودة الاتصال.
+                    يبدأ التتبع عبر GPS تلقائياً فور اعتماد المدير للرحلة، ويقف تلقائياً عند عودة الوايت لنقطة الانطلاق أو عند إيقاف المدير للتتبع، مع حفظ النقاط محلياً عبر IndexedDB ومزامنتها فور توفر الإنترنت.
                   </p>
                 </div>
               </div>

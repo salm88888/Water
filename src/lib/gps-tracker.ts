@@ -68,6 +68,57 @@ export function isWithinPlantGeofence(
   };
 }
 
+export interface PlantDepartureEvaluation {
+  distanceFromPlantMeters: number;
+  geofenceRadius: number;
+  triggerDistanceMeters: number;
+  maxAllowedAccuracy: number;
+  isReliableAccuracy: boolean;
+  insidePlant: boolean;
+  outsideTriggerZone: boolean;
+  highConfidenceFastDeparture: boolean;
+}
+
+/**
+ * Evaluates whether a GPS reading indicates the truck has genuinely left the plant perimeter
+ * (beyond geofence radius + buffer) with reliable GPS accuracy, avoiding false starts from drift.
+ */
+export function evaluatePlantDepartureTrigger(params: {
+  lat: number;
+  lng: number;
+  accuracy?: number;
+  speedKmH?: number;
+  settings: SystemSettings;
+}): PlantDepartureEvaluation {
+  const { lat, lng, accuracy, speedKmH, settings } = params;
+  const distanceFromPlantMeters = Math.round(
+    haversineDistanceMeters(lat, lng, settings.plantLocation.lat, settings.plantLocation.lng)
+  );
+  const geofenceRadius = Math.max(60, settings.plantGeofenceMeters || 120);
+  const triggerDistanceMeters = Math.max(geofenceRadius + 35, 150);
+  const maxAllowedAccuracy = Math.max(settings.gpsWeakAccuracyMeters || 60, 80);
+  const isReliableAccuracy = accuracy === undefined || accuracy <= maxAllowedAccuracy;
+  const insidePlant = distanceFromPlantMeters <= geofenceRadius;
+  const outsideTriggerZone = isReliableAccuracy && distanceFromPlantMeters >= triggerDistanceMeters;
+  const minMoveSpeed = settings.minMovementSpeedKmH || 8;
+  const highConfidenceFastDeparture =
+    outsideTriggerZone &&
+    typeof speedKmH === 'number' &&
+    speedKmH >= minMoveSpeed &&
+    distanceFromPlantMeters >= triggerDistanceMeters + 50;
+
+  return {
+    distanceFromPlantMeters,
+    geofenceRadius,
+    triggerDistanceMeters,
+    maxAllowedAccuracy,
+    isReliableAccuracy,
+    insidePlant,
+    outsideTriggerZone,
+    highConfidenceFastDeparture,
+  };
+}
+
 export interface TrackAnalysisResult {
   points: TripGPSPoint[];
   detectedStops: DetectedStop[];
@@ -151,12 +202,24 @@ export function analyzeGpsTrack(params: {
 
     // Filter impossible GPS teleport spike (> 160 km/h unless gap >= 60s)
     const derivedSpeedKmH = dtSec > 0 ? (segKm / dtSec) * 3600 : 0;
-    pt.distanceFromPrevKm = Number(segKm.toFixed(4));
-    totalDistanceKm += segKm;
 
     // Prefer hardware speed when realistic, otherwise derive from distance/time
     if (typeof pt.speedKmH !== 'number' || Number.isNaN(pt.speedKmH) || pt.speedKmH < 0) {
       pt.speedKmH = Number(Math.min(130, derivedSpeedKmH).toFixed(1));
+    }
+
+    const isTeleportSpike = dtSec > 0 && dtSec < 60 && derivedSpeedKmH > 160;
+    const isWeakSignalDrift =
+      Boolean(pt.isWeakSignal) &&
+      segMeters <= Math.max(pt.accuracy || 0, 120) &&
+      pt.speedKmH < minMoveSpeed;
+    const isStationaryJitter = segMeters < 18 && pt.speedKmH < 2;
+
+    if (isTeleportSpike || isWeakSignalDrift || isStationaryJitter) {
+      pt.distanceFromPrevKm = 0;
+    } else {
+      pt.distanceFromPrevKm = Number(segKm.toFixed(4));
+      totalDistanceKm += segKm;
     }
 
     // Check GPS signal/recording gap
@@ -338,6 +401,215 @@ export function buildPlanVsActualSummary(trip: Trip): PlanVsActualSummary {
     deliveredLiters: trip.deliveredLiters || 0,
     gpsPointsCount: gpsPoints.length,
     gpsGapsCount: gpsGaps.length,
+  };
+}
+
+export interface TripCompletionReadiness {
+  qualified: boolean;
+  hasDeparted: boolean;
+  hasConfirmedReturn: boolean;
+  visitedCustomerStop: boolean;
+  maxDistanceFromOriginMeters: number;
+  filteredDistanceKm: number;
+  elapsedSeconds: number;
+  departureThresholdMeters: number;
+  geofenceRadius: number;
+  reason: string;
+}
+
+/**
+ * Evaluates whether an in-progress trip genuinely left the starting point/plant,
+ * executed a real route (either >= 450m radial departure & >= 0.8km filtered travel & >= 2m duration,
+ * or visited a planned customer stop >= 180m away), and returned inside the plant/origin geofence
+ * for at least 2 consecutive reliable GPS readings.
+ * Prevents premature completion when moving only a few meters or during GPS drift/jitter.
+ */
+export function evaluateTripCompletionReadiness(params: {
+  trip: Trip;
+  settings: SystemSettings;
+  points?: TripGPSPoint[];
+  originOverride?: { lat: number; lng: number };
+  candidateReturnLocation?: { lat: number; lng: number; accuracy?: number };
+}): TripCompletionReadiness {
+  const { trip, settings, originOverride, candidateReturnLocation } = params;
+  const rawPoints = params.points ?? trip.gpsPoints ?? [];
+
+  const geofenceRadius = Math.max(60, settings.plantGeofenceMeters || 120);
+  const departureThresholdMeters = Math.max(geofenceRadius * 3.5, 450);
+  const stopVisitRadiusMeters = Math.max(settings.stopRadiusMeters || 80, 100);
+  const minNearbyCustomerOriginMeters = Math.max(geofenceRadius * 1.5, 180);
+  const maxAllowedAccuracy = Math.max(settings.gpsWeakAccuracyMeters || 60, 80);
+
+  const analysis = analyzeGpsTrack({
+    tripId: trip.id,
+    rawPoints,
+    approvedStops: trip.customerStops || [],
+    settings,
+  });
+
+  const points = analysis.points;
+  const firstReliable = points.find(
+    (p) => p.accuracy === undefined || p.accuracy <= maxAllowedAccuracy
+  );
+  const startInsidePlant =
+    trip.startLocation !== undefined &&
+    isWithinPlantGeofence(trip.startLocation.lat, trip.startLocation.lng, settings).inside;
+  const anchorToStartOrPlant = trip.id.startsWith('trip-auto-') || startInsidePlant;
+  const origin =
+    originOverride ||
+    (anchorToStartOrPlant
+      ? trip.startLocation || settings.plantLocation
+      : (firstReliable ? { lat: firstReliable.lat, lng: firstReliable.lng } : undefined) ||
+        trip.startLocation ||
+        settings.plantLocation);
+
+  const reliablePoints = points.filter(
+    (p) => p.accuracy === undefined || p.accuracy <= maxAllowedAccuracy
+  );
+
+  // Elapsed time since trip start or first GPS point
+  const startMsCandidates: number[] = [];
+  if (trip.startedAt) startMsCandidates.push(new Date(trip.startedAt).getTime());
+  if (points.length > 0) startMsCandidates.push(new Date(points[0].timestamp).getTime());
+  const startMs =
+    startMsCandidates.length > 0
+      ? Math.min(...startMsCandidates.filter((v) => Number.isFinite(v)))
+      : Date.now();
+  const latestPtMs =
+    points.length > 0
+      ? new Date(points[points.length - 1].timestamp).getTime()
+      : Date.now();
+  const elapsedSeconds = Math.max(0, Math.round((latestPtMs - startMs) / 1000));
+
+  let maxDistanceFromOriginMeters = 0;
+  let consecutiveOutsideDeparture = 0;
+  let departureConfirmIdx = -1;
+  let consecutiveCustomerHits = 0;
+  let visitedCustomerStop = (trip.detectedStops || []).some((s) => Boolean(s.nearCustomerId));
+
+  const stops = trip.customerStops || [];
+
+  for (let i = 0; i < reliablePoints.length; i++) {
+    const pt = reliablePoints[i];
+    const distFromOrigin = haversineDistanceMeters(pt.lat, pt.lng, origin.lat, origin.lng);
+    const distFromPlant = haversineDistanceMeters(
+      pt.lat,
+      pt.lng,
+      settings.plantLocation.lat,
+      settings.plantLocation.lng
+    );
+    if (distFromOrigin > maxDistanceFromOriginMeters) {
+      maxDistanceFromOriginMeters = distFromOrigin;
+    }
+
+    const isOutsideDeparture =
+      distFromOrigin >= departureThresholdMeters && distFromPlant >= departureThresholdMeters;
+
+    if (isOutsideDeparture) {
+      consecutiveOutsideDeparture += 1;
+      if (consecutiveOutsideDeparture >= 2 && departureConfirmIdx === -1) {
+        departureConfirmIdx = i;
+      }
+    } else {
+      consecutiveOutsideDeparture = 0;
+    }
+
+    // Also detect genuine visit to a planned customer stop (even if close to plant)
+    const isNearCustomer =
+      distFromOrigin >= minNearbyCustomerOriginMeters &&
+      stops.some(
+        (s) => haversineDistanceMeters(pt.lat, pt.lng, s.lat, s.lng) <= stopVisitRadiusMeters
+      );
+
+    if (isNearCustomer) {
+      consecutiveCustomerHits += 1;
+      if (consecutiveCustomerHits >= 2) {
+        visitedCustomerStop = true;
+        if (departureConfirmIdx === -1) {
+          departureConfirmIdx = i;
+        }
+      }
+    } else {
+      consecutiveCustomerHits = 0;
+    }
+  }
+
+  const hasDeparted = departureConfirmIdx !== -1;
+
+  // Check return confirmation ONLY from points strictly after departure confirmation
+  const postDeparturePoints = hasDeparted ? reliablePoints.slice(departureConfirmIdx + 1) : [];
+  const checkInsideReturnGeofence = (lat: number, lng: number) => {
+    const dOrigin = haversineDistanceMeters(lat, lng, origin.lat, origin.lng);
+    const dPlant = haversineDistanceMeters(
+      lat,
+      lng,
+      settings.plantLocation.lat,
+      settings.plantLocation.lng
+    );
+    return dOrigin <= geofenceRadius || dPlant <= geofenceRadius;
+  };
+
+  let consecutiveReturnHits = 0;
+  if (postDeparturePoints.length >= 2) {
+    const lastTwo = postDeparturePoints.slice(-2);
+    if (lastTwo.every((p) => checkInsideReturnGeofence(p.lat, p.lng))) {
+      consecutiveReturnHits = 2;
+    }
+  } else if (
+    postDeparturePoints.length === 1 &&
+    candidateReturnLocation &&
+    (candidateReturnLocation.accuracy === undefined ||
+      candidateReturnLocation.accuracy <= maxAllowedAccuracy)
+  ) {
+    if (
+      checkInsideReturnGeofence(postDeparturePoints[0].lat, postDeparturePoints[0].lng) &&
+      checkInsideReturnGeofence(candidateReturnLocation.lat, candidateReturnLocation.lng)
+    ) {
+      consecutiveReturnHits = 2;
+    }
+  }
+
+  const hasConfirmedReturn = consecutiveReturnHits >= 2;
+
+  const filteredDistanceKm = analysis.totalDistanceKm;
+  const minDistanceKmRequired = visitedCustomerStop ? 0.3 : 0.8;
+  const minDurationSecRequired = visitedCustomerStop ? 60 : 120;
+
+  const hasSufficientTravel =
+    (visitedCustomerStop &&
+      maxDistanceFromOriginMeters >= minNearbyCustomerOriginMeters &&
+      filteredDistanceKm >= minDistanceKmRequired) ||
+    (maxDistanceFromOriginMeters >= departureThresholdMeters &&
+      filteredDistanceKm >= minDistanceKmRequired);
+
+  const hasMinDuration = elapsedSeconds >= minDurationSecRequired;
+
+  const qualified = hasDeparted && hasSufficientTravel && hasMinDuration && hasConfirmedReturn;
+
+  let reason = 'قيد التتبع';
+  if (!hasDeparted) {
+    reason = `لم يبتعد الوايت عن نقطة الانطلاق بمسافة كافية بعد (أقصى مسافة: ${Math.round(maxDistanceFromOriginMeters)}م من أصل ${departureThresholdMeters}م)`;
+  } else if (!hasSufficientTravel) {
+    reason = `المسافة الفعلية المقطوعة غير كافية لاعتبارها رحلة مكتملة (${filteredDistanceKm} كم من أصل ${minDistanceKmRequired} كم المطلوبة)`;
+  } else if (!hasMinDuration) {
+    reason = `مدة الرحلة قصيرة جداً (${elapsedSeconds} ث من أصل ${minDurationSecRequired} ث المطلوبة)`;
+  } else if (!hasConfirmedReturn) {
+    reason = 'الوايت خارج نطاق العودة أو بانتظار تأكيد قراءتين متتاليتين داخل نقطة الانطلاق';
+  } else {
+    reason = 'اكتملت شروط الانطلاق الفعلي والعودة المؤكدة لنقطة الانطلاق';
+  }
+
+  return {
+    qualified,
+    hasDeparted,
+    hasConfirmedReturn,
+    visitedCustomerStop,
+    maxDistanceFromOriginMeters: Math.round(maxDistanceFromOriginMeters),
+    filteredDistanceKm,
+    elapsedSeconds,
+    departureThresholdMeters,
+    geofenceRadius,
+    reason,
   };
 }
 

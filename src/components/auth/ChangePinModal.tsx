@@ -5,7 +5,7 @@
  * Allows updating the Manager entry PIN with old PIN verification.
  */
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   KeyRound,
   X,
@@ -13,6 +13,7 @@ import {
   CheckCircle,
   AlertCircle,
   Save,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
@@ -30,11 +31,13 @@ export const ChangePinModal: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
 
   if (!isChangePinModalOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitLockRef.current) return;
     setError(null);
     setSuccess(null);
 
@@ -53,6 +56,7 @@ export const ChangePinModal: React.FC = () => {
       return;
     }
 
+    submitLockRef.current = true;
     setIsSubmitting(true);
     try {
       const ok = await updateManagerPin(newPin);
@@ -72,6 +76,7 @@ export const ChangePinModal: React.FC = () => {
       console.error(err);
       setError('حدث خطأ أثناء حفظ الرمز.');
     } finally {
+      submitLockRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -174,7 +179,7 @@ export const ChangePinModal: React.FC = () => {
               disabled={isSubmitting}
               className="px-5 py-2 bg-sky-700 text-white rounded-lg hover:bg-sky-800 font-semibold flex items-center gap-1.5 shadow-sm disabled:opacity-50"
             >
-              <Save className="w-4 h-4" />
+              {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
               <span>{isSubmitting ? 'جاري الحفظ...' : 'حفظ الرمز الجديد'}</span>
             </button>
           </div>

@@ -5,7 +5,7 @@
  * GPS Tracking Map Inspection, Stops Report, Plan-vs-Actual Review & Audit Timeline
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   Truck,
   CheckCircle,
@@ -29,10 +29,13 @@ import {
   Trash2,
   Send,
   X,
+  Loader2,
+  Square,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Trip, TripCustomerStop, TripStatus, TripSyncStatus } from '../../types';
 import { TripTrackingMap } from './TripTrackingMapModal';
+import { DriverAnalyticsDashboard } from './DriverAnalyticsDashboard';
 import { buildPlanVsActualSummary } from '../../lib/gps-tracker';
 
 export function getTripStatusArabic(status: TripStatus): string {
@@ -44,9 +47,9 @@ export function getTripStatusArabic(status: TripStatus): string {
     case 'rejected':
       return 'مرفوضة';
     case 'approved':
-      return 'معتمدة - جاهزة للبدء';
+      return 'معتمدة';
     case 'in_progress':
-      return 'جارية الآن';
+      return 'جارية (التتبع GPS نشط)';
     case 'returned_to_plant':
       return 'عادت للمصنع';
     case 'pending_sync':
@@ -112,12 +115,14 @@ export const TripsManagement: React.FC = () => {
     orders,
     customers,
     driverAccounts,
+    expenses,
     truck,
     settings,
     selectedTrip: ctxSelectedTrip,
     createTripPlan,
     updateTripPlan,
     approveTrip,
+    stopTripTracking,
     rejectTrip,
     returnTripForEdit,
     approveTripModification,
@@ -149,7 +154,13 @@ export const TripsManagement: React.FC = () => {
   const [plannerNotes, setPlannerNotes] = useState('');
   const [plannerError, setPlannerError] = useState<string | null>(null);
   const [plannerSuccess, setPlannerSuccess] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [isSavingPlan, setIsSavingPlan] = useState(false);
+  const [busyTripActionKey, setBusyTripActionKey] = useState<string | null>(null);
+  const [isConfirmingModal, setIsConfirmingModal] = useState(false);
+  const planLockRef = useRef(false);
+  const tripActionLockRef = useRef(false);
+  const modalLockRef = useRef(false);
 
   const approvedDrivers = useMemo(
     () => driverAccounts.filter((d) => d.status === 'approved'),
@@ -261,6 +272,7 @@ export const TripsManagement: React.FC = () => {
   };
 
   const handleSaveManagerPlan = async (approveImmediately: boolean) => {
+    if (planLockRef.current) return;
     setPlannerError(null);
     if (plannerStops.length === 0) {
       setPlannerError('يجب اختيار طلب أو زبون واحد على الأقل لتكوين مخطط الرحلة.');
@@ -272,6 +284,7 @@ export const TripsManagement: React.FC = () => {
     }
 
     const chosenDriver = approvedDrivers.find((d) => d.id === plannerDriverId);
+    planLockRef.current = true;
     setIsSavingPlan(true);
     try {
       if (plannerMode === 'create') {
@@ -287,7 +300,7 @@ export const TripsManagement: React.FC = () => {
         setPlannerMode('closed');
         setPlannerSuccess(
           approveImmediately
-            ? `تم إنشاء واعتماد مخطط الرحلة ${created.tripNumber} وإرساله إلى تطبيق السائق (${created.driverName}) للموافقة والتنفيذ.`
+            ? `تم إنشاء واعتماد الرحلة ${created.tripNumber} وبدأ تتبع GPS تلقائياً عند السائق (${created.driverName}).`
             : `تم حفظ مسودة مخطط الرحلة ${created.tripNumber} بنجاح.`
         );
         setTimeout(() => setPlannerSuccess(null), 5000);
@@ -298,12 +311,16 @@ export const TripsManagement: React.FC = () => {
           return;
         }
         if (approveImmediately) {
-          await approveTrip(editingTripId, 'اعتماد وتوجيه للسائق بعد تحديث المخطط');
+          const appRes = await approveTrip(editingTripId, 'اعتماد وتوجيه للسائق بعد تحديث المخطط');
+          if (!appRes.success) {
+            setPlannerError(appRes.error || 'تعذر اعتماد الرحلة وبدء التتبع');
+            return;
+          }
         }
         setPlannerMode('closed');
         setPlannerSuccess(
           approveImmediately
-            ? 'تم تحديث المخطط واعتماده وإرساله إلى السائق بنجاح.'
+            ? 'تم تحديث المخطط واعتماده وبدأ تتبع GPS تلقائياً عند السائق.'
             : 'تم حفظ تعديلات مسودة الرحلة بنجاح.'
         );
         setTimeout(() => setPlannerSuccess(null), 5000);
@@ -311,6 +328,7 @@ export const TripsManagement: React.FC = () => {
     } catch (err) {
       setPlannerError(err instanceof Error ? err.message : 'تعذر حفظ مخطط الرحلة');
     } finally {
+      planLockRef.current = false;
       setIsSavingPlan(false);
     }
   };
@@ -328,16 +346,85 @@ export const TripsManagement: React.FC = () => {
 
   const handleConfirmModal = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!reasonModal) return;
-    if (reasonModal.type === 'reject') {
-      await rejectTrip(reasonModal.tripId, reasonInput || 'تم الرفض من قبل المدير');
-    } else if (reasonModal.type === 'return_edit') {
-      await returnTripForEdit(reasonModal.tripId, reasonInput || 'يرجى مراجعة الوجهات والترتيب');
-    } else if (reasonModal.type === 'close_review') {
-      await closeTripAfterReview(reasonModal.tripId, reasonInput || 'تمت مراجعة المسار والتوقفات وإغلاق الرحلة');
+    if (!reasonModal || modalLockRef.current) return;
+    modalLockRef.current = true;
+    setIsConfirmingModal(true);
+    try {
+      if (reasonModal.type === 'reject') {
+        await rejectTrip(reasonModal.tripId, reasonInput || 'تم الرفض من قبل المدير');
+      } else if (reasonModal.type === 'return_edit') {
+        await returnTripForEdit(reasonModal.tripId, reasonInput || 'يرجى مراجعة الوجهات والترتيب');
+      } else if (reasonModal.type === 'close_review') {
+        await closeTripAfterReview(reasonModal.tripId, reasonInput || 'تمت مراجعة المسار والتوقفات وإغلاق الرحلة');
+      }
+      setReasonModal(null);
+      setReasonInput('');
+    } finally {
+      modalLockRef.current = false;
+      setIsConfirmingModal(false);
     }
-    setReasonModal(null);
-    setReasonInput('');
+  };
+
+  const handleApproveTripAction = async (tripId: string) => {
+    if (tripActionLockRef.current) return;
+    tripActionLockRef.current = true;
+    setActionError(null);
+    setBusyTripActionKey(`approve:${tripId}`);
+    try {
+      const res = await approveTrip(tripId);
+      if (!res.success) {
+        setActionError(res.error || 'تعذر اعتماد الرحلة وبدء التتبع');
+      } else {
+        setPlannerSuccess('تم اعتماد الرحلة وبدأ التتبع الجغرافي التلقائي GPS عند السائق.');
+        setTimeout(() => setPlannerSuccess(null), 5000);
+      }
+    } finally {
+      tripActionLockRef.current = false;
+      setBusyTripActionKey(null);
+    }
+  };
+
+  const handleStopTrackingAction = async (tripId: string) => {
+    if (tripActionLockRef.current) return;
+    tripActionLockRef.current = true;
+    setActionError(null);
+    setBusyTripActionKey(`stop:${tripId}`);
+    try {
+      const res = await stopTripTracking(tripId, 'تم إيقاف التتبع يدوياً من لوحة المدير العام');
+      if (!res.success) {
+        setActionError(res.error || 'تعذر إيقاف التتبع');
+      } else {
+        setPlannerSuccess('تم إيقاف التتبع الجغرافي للرحلة وتحويلها إلى قائمة المراجعة.');
+        setTimeout(() => setPlannerSuccess(null), 5000);
+      }
+    } finally {
+      tripActionLockRef.current = false;
+      setBusyTripActionKey(null);
+    }
+  };
+
+  const handleApproveModAction = async (tripId: string, reqId: string) => {
+    if (tripActionLockRef.current) return;
+    tripActionLockRef.current = true;
+    setBusyTripActionKey(`mod-approve:${reqId}`);
+    try {
+      await approveTripModification(tripId, reqId);
+    } finally {
+      tripActionLockRef.current = false;
+      setBusyTripActionKey(null);
+    }
+  };
+
+  const handleRejectModAction = async (tripId: string, reqId: string) => {
+    if (tripActionLockRef.current) return;
+    tripActionLockRef.current = true;
+    setBusyTripActionKey(`mod-reject:${reqId}`);
+    try {
+      await rejectTripModification(tripId, reqId);
+    } finally {
+      tripActionLockRef.current = false;
+      setBusyTripActionKey(null);
+    }
   };
 
   return (
@@ -394,6 +481,28 @@ export const TripsManagement: React.FC = () => {
           </button>
         </div>
       )}
+
+      {actionError && (
+        <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-semibold flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{actionError}</span>
+          </div>
+          <button onClick={() => setActionError(null)} className="text-rose-700 hover:text-rose-950">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Driver Performance Analytics Dashboard */}
+      <DriverAnalyticsDashboard
+        trips={trips}
+        driverAccounts={driverAccounts}
+        expenses={expenses}
+        settings={settings}
+        onSelectTrip={(id) => setSelectedTripId(id)}
+        onCreateTrip={openCreateManagerPlanner}
+      />
 
       {/* Filter Tabs */}
       <div className="flex flex-wrap gap-2 text-xs">
@@ -464,10 +573,21 @@ export const TripsManagement: React.FC = () => {
                     </td>
                     <td className="py-3 px-3 font-mono text-slate-600">{trip.date}</td>
                     <td className="py-3 px-3">
-                      <div className="font-bold text-slate-800">{trip.customerStops.length} وجهات</div>
-                      <div className="text-[11px] font-mono text-sky-700">
-                        {trip.initialLoadLiters.toLocaleString()}L (مسلم {trip.deliveredLiters.toLocaleString()}L)
-                      </div>
+                      {trip.customerStops.length === 0 ? (
+                        <>
+                          <div className="font-bold text-amber-700">تتبع تلقائي (ابتعاد عن محيط المصنع)</div>
+                          <div className="text-[11px] font-mono text-slate-500">
+                            مسار حر · {(trip.gpsPoints || []).length} نقطة GPS
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="font-bold text-slate-800">{trip.customerStops.length} وجهات</div>
+                          <div className="text-[11px] font-mono text-sky-700">
+                            {trip.initialLoadLiters.toLocaleString()}L (مسلم {trip.deliveredLiters.toLocaleString()}L)
+                          </div>
+                        </>
+                      )}
                     </td>
                     <td className="py-3 px-3 font-mono text-[11px] text-slate-600">
                       <div>
@@ -518,12 +638,29 @@ export const TripsManagement: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3 px-3 text-center" onClick={(e) => e.stopPropagation()}>
-                      <button
-                        onClick={() => setSelectedTripId(trip.id)}
-                        className="px-2.5 py-1 bg-white border border-slate-300 hover:bg-slate-100 rounded text-[11px] font-bold text-slate-800"
-                      >
-                        فتح التقرير والخريطة
-                      </button>
+                      <div className="flex items-center justify-center gap-1.5">
+                        {trip.status === 'in_progress' && (
+                          <button
+                            type="button"
+                            disabled={Boolean(busyTripActionKey)}
+                            onClick={() => handleStopTrackingAction(trip.id)}
+                            className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white rounded text-[11px] font-bold flex items-center gap-1"
+                          >
+                            {busyTripActionKey === `stop:${trip.id}` ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Square className="w-3 h-3 fill-white" />
+                            )}
+                            <span>إيقاف التتبع</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => setSelectedTripId(trip.id)}
+                          className="px-2.5 py-1 bg-white border border-slate-300 hover:bg-slate-100 rounded text-[11px] font-bold text-slate-800"
+                        >
+                          فتح التقرير والخريطة
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -549,12 +686,34 @@ export const TripsManagement: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-1">
-                {selectedTrip.customerStops.map((s) => s.customerName).join(' ← ')}
+                {selectedTrip.customerStops.length > 0
+                  ? selectedTrip.customerStops.map((s) => s.customerName).join(' ← ')
+                  : 'تتبع تلقائي مسجل عند ابتعاد الوايت عن محيط المصنع (بدون وجهات مسبقة)'}
               </p>
             </div>
 
             {/* Contextual Manager Decision Buttons */}
             <div className="flex flex-wrap items-center gap-2">
+              {selectedTrip.status === 'in_progress' && (
+                <button
+                  type="button"
+                  disabled={Boolean(busyTripActionKey)}
+                  onClick={() => handleStopTrackingAction(selectedTrip.id)}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm"
+                >
+                  {busyTripActionKey === `stop:${selectedTrip.id}` ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Square className="w-3.5 h-3.5 fill-white" />
+                  )}
+                  <span>
+                    {busyTripActionKey === `stop:${selectedTrip.id}`
+                      ? 'جاري إيقاف التتبع...'
+                      : 'إيقاف التتبع وإنهاء الرحلة'}
+                  </span>
+                </button>
+              )}
+
               {(selectedTrip.status === 'pending_approval' || selectedTrip.status === 'draft' || selectedTrip.status === 'rejected') && (
                 <>
                   {(selectedTrip.status === 'draft' || selectedTrip.status === 'rejected') && (
@@ -567,11 +726,21 @@ export const TripsManagement: React.FC = () => {
                     </button>
                   )}
                   <button
-                    onClick={() => approveTrip(selectedTrip.id)}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm"
+                    type="button"
+                    disabled={Boolean(busyTripActionKey)}
+                    onClick={() => handleApproveTripAction(selectedTrip.id)}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm"
                   >
-                    <ShieldCheck className="w-4 h-4" />
-                    <span>اعتماد الرحلة وتكليف السائق</span>
+                    {busyTripActionKey === `approve:${selectedTrip.id}` ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <ShieldCheck className="w-4 h-4" />
+                    )}
+                    <span>
+                      {busyTripActionKey === `approve:${selectedTrip.id}`
+                        ? 'جاري الاعتماد وبدء التتبع...'
+                        : 'اعتماد الرحلة وبدء التتبع'}
+                    </span>
                   </button>
                   {selectedTrip.status !== 'rejected' && (
                     <button
@@ -685,16 +854,22 @@ export const TripsManagement: React.FC = () => {
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <button
-                        onClick={() => approveTripModification(selectedTrip.id, req.id)}
-                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold"
+                        type="button"
+                        disabled={Boolean(busyTripActionKey)}
+                        onClick={() => handleApproveModAction(selectedTrip.id, req.id)}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-lg font-bold flex items-center gap-1"
                       >
-                        موافقة وتطبيق
+                        {busyTripActionKey === `mod-approve:${req.id}` && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                        <span>موافقة وتطبيق</span>
                       </button>
                       <button
-                        onClick={() => rejectTripModification(selectedTrip.id, req.id)}
-                        className="px-3 py-1.5 bg-rose-100 hover:bg-rose-200 text-rose-800 rounded-lg font-bold"
+                        type="button"
+                        disabled={Boolean(busyTripActionKey)}
+                        onClick={() => handleRejectModAction(selectedTrip.id, req.id)}
+                        className="px-3 py-1.5 bg-rose-100 hover:bg-rose-200 disabled:opacity-60 text-rose-800 rounded-lg font-bold flex items-center gap-1"
                       >
-                        رفض التعديل
+                        {busyTripActionKey === `mod-reject:${req.id}` && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                        <span>رفض التعديل</span>
                       </button>
                     </div>
                   </div>
@@ -870,34 +1045,42 @@ export const TripsManagement: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {selectedTrip.customerStops.map((stop) => (
-                    <tr key={stop.orderId}>
-                      <td className="py-2.5 px-3 font-mono font-bold text-sky-700">{stop.stopSequence}</td>
-                      <td className="py-2.5 px-3">
-                        <div className="font-semibold text-slate-900">{stop.customerName}</div>
-                        <div className="text-[11px] text-slate-500">{stop.district}</div>
-                      </td>
-                      <td className="py-2.5 px-3 font-mono text-slate-600">{stop.phone}</td>
-                      <td className="py-2.5 px-3 font-mono">{stop.requestedLiters.toLocaleString()}L</td>
-                      <td className="py-2.5 px-3 font-mono font-bold text-sky-800">
-                        {stop.deliveredLiters > 0 ? `${stop.deliveredLiters.toLocaleString()}L` : '-'}
-                      </td>
-                      <td className="py-2.5 px-3 font-mono font-bold text-emerald-700">
-                        {stop.paidAmount > 0 ? `${stop.paidAmount.toLocaleString()} ر.ي` : '0 ر.ي'}
-                      </td>
-                      <td className="py-2.5 px-3">
-                        <span
-                          className={`text-[10px] px-2 py-0.5 rounded font-semibold ${
-                            stop.status === 'delivered'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-slate-100 text-slate-600'
-                          }`}
-                        >
-                          {stop.status === 'delivered' ? 'تم التسليم والفوترة' : 'لم يُسجل تسليم'}
-                        </span>
+                  {selectedTrip.customerStops.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-6 px-4 text-center text-slate-500">
+                        رحلة تتبع تلقائي (بدأت تلقائياً عند ابتعاد الوايت عن محيط المصنع) — لا توجد وجهات مبرمجة مسبقاً.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    selectedTrip.customerStops.map((stop) => (
+                      <tr key={stop.orderId}>
+                        <td className="py-2.5 px-3 font-mono font-bold text-sky-700">{stop.stopSequence}</td>
+                        <td className="py-2.5 px-3">
+                          <div className="font-semibold text-slate-900">{stop.customerName}</div>
+                          <div className="text-[11px] text-slate-500">{stop.district}</div>
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-slate-600">{stop.phone}</td>
+                        <td className="py-2.5 px-3 font-mono">{stop.requestedLiters.toLocaleString()}L</td>
+                        <td className="py-2.5 px-3 font-mono font-bold text-sky-800">
+                          {stop.deliveredLiters > 0 ? `${stop.deliveredLiters.toLocaleString()}L` : '-'}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono font-bold text-emerald-700">
+                          {stop.paidAmount > 0 ? `${stop.paidAmount.toLocaleString()} ر.ي` : '0 ر.ي'}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded font-semibold ${
+                              stop.status === 'delivered'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            {stop.status === 'delivered' ? 'تم التسليم والفوترة' : 'لم يُسجل تسليم'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -954,19 +1137,22 @@ export const TripsManagement: React.FC = () => {
               <div className="flex gap-2 justify-end">
                 <button
                   type="button"
+                  disabled={isConfirmingModal}
                   onClick={() => {
                     setReasonModal(null);
                     setReasonInput('');
                   }}
-                  className="px-4 py-2 border border-slate-200 rounded-lg font-semibold text-slate-700"
+                  className="px-4 py-2 border border-slate-200 rounded-lg font-semibold text-slate-700 disabled:opacity-50"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-sky-700 hover:bg-sky-800 text-white rounded-lg font-bold"
+                  disabled={isConfirmingModal}
+                  className="px-4 py-2 bg-sky-700 hover:bg-sky-800 disabled:opacity-60 text-white rounded-lg font-bold flex items-center gap-1.5"
                 >
-                  تأكيد وحفظ في السجل
+                  {isConfirmingModal && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{isConfirmingModal ? 'جاري الحفظ...' : 'تأكيد وحفظ في السجل'}</span>
                 </button>
               </div>
             </form>
@@ -1169,8 +1355,9 @@ export const TripsManagement: React.FC = () => {
             <div className="p-4 border-t border-slate-200 bg-slate-50 rounded-b-2xl flex flex-wrap gap-2 justify-end">
               <button
                 type="button"
+                disabled={isSavingPlan}
                 onClick={() => setPlannerMode('closed')}
-                className="px-4 py-2 border border-slate-300 bg-white rounded-lg font-bold text-slate-700"
+                className="px-4 py-2 border border-slate-300 bg-white rounded-lg font-bold text-slate-700 disabled:opacity-50"
               >
                 إلغاء
               </button>
@@ -1178,9 +1365,10 @@ export const TripsManagement: React.FC = () => {
                 type="button"
                 disabled={isSavingPlan || plannerStops.length === 0 || overCapacity}
                 onClick={() => handleSaveManagerPlan(false)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg font-bold disabled:opacity-50"
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg font-bold disabled:opacity-50 flex items-center gap-1.5"
               >
-                حفظ كمسودة
+                {isSavingPlan && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>حفظ كمسودة</span>
               </button>
               <button
                 type="button"
@@ -1188,8 +1376,8 @@ export const TripsManagement: React.FC = () => {
                 onClick={() => handleSaveManagerPlan(true)}
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold flex items-center gap-1.5 disabled:opacity-50"
               >
-                <Send className="w-3.5 h-3.5" />
-                <span>{isSavingPlan ? 'جاري الإرسال...' : 'اعتماد وإرسال طلب الرحلة للسائق'}</span>
+                {isSavingPlan ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                <span>{isSavingPlan ? 'جاري الاعتماد والتشغيل...' : 'اعتماد الرحلة وبدء التتبع تلقائياً'}</span>
               </button>
             </div>
           </div>

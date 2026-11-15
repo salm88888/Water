@@ -4,7 +4,7 @@
  * Miyahna - Expenses, Fuel & Truck Maintenance Management
  */
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Fuel,
   Wrench,
@@ -15,6 +15,7 @@ import {
   AlertCircle,
   Truck,
   Droplet,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Expense } from '../../types';
@@ -23,6 +24,8 @@ export const ExpensesAndFuel: React.FC = () => {
   const { expenses, addExpense, settings, trips } = useApp();
 
   const [showAddModal, setShowAddModal] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
   const [formData, setFormData] = useState({
     category: 'diesel' as Expense['category'],
     description: '',
@@ -35,14 +38,21 @@ export const ExpensesAndFuel: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.description || formData.amount <= 0) return;
+    if (submitLockRef.current || !formData.description || formData.amount <= 0) return;
 
-    await addExpense({
-      ...formData,
-      amount: Number(formData.amount),
-      liters: formData.category === 'diesel' ? Number(formData.liters) : undefined,
-    });
-    setShowAddModal(false);
+    submitLockRef.current = true;
+    setIsSubmitting(true);
+    try {
+      await addExpense({
+        ...formData,
+        amount: Number(formData.amount),
+        liters: formData.category === 'diesel' ? Number(formData.liters) : undefined,
+      });
+      setShowAddModal(false);
+    } finally {
+      submitLockRef.current = false;
+      setIsSubmitting(false);
+    }
   };
 
   // Grouped totals
@@ -251,16 +261,19 @@ export const ExpensesAndFuel: React.FC = () => {
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-3">
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={() => setShowAddModal(false)}
-                  className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 font-medium"
+                  className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 font-medium disabled:opacity-50"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-sky-700 text-white rounded-lg hover:bg-sky-800 font-semibold"
+                  disabled={isSubmitting}
+                  className="px-5 py-2 bg-sky-700 text-white rounded-lg hover:bg-sky-800 disabled:opacity-60 font-semibold flex items-center gap-1.5"
                 >
-                  حفظ السند
+                  {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>{isSubmitting ? 'جاري الحفظ...' : 'حفظ السند'}</span>
                 </button>
               </div>
             </form>

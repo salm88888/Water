@@ -24,6 +24,7 @@ export interface PendingDeliverySync {
 
 export interface PendingOfflineOrder {
   id: string;
+  clientRequestId?: string;
   customerId?: string;
   customerName: string;
   phone: string;
@@ -44,6 +45,7 @@ export interface PendingOfflineOrder {
 
 export interface PendingOfflineCustomer {
   id: string;
+  clientRequestId?: string;
   name: string;
   phone: string;
   district: string;
@@ -63,6 +65,7 @@ export interface OfflineState {
   pendingDeliveries: PendingDeliverySync[];
   pendingOrders: PendingOfflineOrder[];
   pendingCustomers: PendingOfflineCustomer[];
+  pendingDistricts: string[];
   pendingGpsPoints: TripGPSPoint[];
   lastKnownGps: { lat: number; lng: number; speed: number; accuracy?: number; timestamp: string } | null;
   sequenceCounter: number;
@@ -82,6 +85,7 @@ export function loadOfflineState(): OfflineState {
         pendingDeliveries: Array.isArray(parsed.pendingDeliveries) ? parsed.pendingDeliveries : [],
         pendingOrders: Array.isArray(parsed.pendingOrders) ? parsed.pendingOrders : [],
         pendingCustomers: Array.isArray(parsed.pendingCustomers) ? parsed.pendingCustomers : [],
+        pendingDistricts: Array.isArray(parsed.pendingDistricts) ? parsed.pendingDistricts : [],
         pendingGpsPoints: Array.isArray(parsed.pendingGpsPoints) ? parsed.pendingGpsPoints : [],
         lastKnownGps: parsed.lastKnownGps || null,
         sequenceCounter: typeof parsed.sequenceCounter === 'number' ? parsed.sequenceCounter : 1,
@@ -98,6 +102,7 @@ export function loadOfflineState(): OfflineState {
     pendingDeliveries: [],
     pendingOrders: [],
     pendingCustomers: [],
+    pendingDistricts: [],
     pendingGpsPoints: [],
     lastKnownGps: null,
     sequenceCounter: 1,
@@ -122,6 +127,7 @@ export function resetOfflineState(): OfflineState {
     pendingDeliveries: [],
     pendingOrders: [],
     pendingCustomers: [],
+    pendingDistricts: [],
     pendingGpsPoints: [],
     lastKnownGps: null,
     sequenceCounter: 1,
@@ -198,6 +204,19 @@ export function queueOfflineCustomer(
   const newState: OfflineState = {
     ...state,
     pendingCustomers: [...(state.pendingCustomers || []), customer],
+  };
+  saveOfflineState(newState);
+  return newState;
+}
+
+export function queueOfflineDistrict(state: OfflineState, district: string): OfflineState {
+  const clean = (district || '').trim();
+  if (!clean || clean === '__other__' || clean === 'أخرى') return state;
+  const current = state.pendingDistricts || [];
+  if (current.includes(clean)) return state;
+  const newState: OfflineState = {
+    ...state,
+    pendingDistricts: [...current, clean],
   };
   saveOfflineState(newState);
   return newState;

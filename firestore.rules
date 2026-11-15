@@ -1,0 +1,745 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Global Primitives ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() && request.auth.token.email == 'salemjalaal1@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isSignedIn() && existing().ownerId == request.auth.uid;
+    }
+
+    function isOptionalString(data, field, maxLen) {
+      return !(field in data) || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isOptionalNumber(data, field) {
+      return !(field in data) || (data[field] is number);
+    }
+
+    function isOptionalBool(data, field) {
+      return !(field in data) || (data[field] is bool);
+    }
+
+    function isOptionalMap(data, field) {
+      return !(field in data) || (data[field] is map);
+    }
+
+    function isOptionalBoundedList(data, field, maxLen) {
+      return !(field in data) || (data[field] is list && data[field].size() <= maxLen);
+    }
+
+    function hasValidAuditCreate(data) {
+      return data.ownerId is string &&
+        data.ownerId.size() >= 1 &&
+        data.ownerId.size() <= 128 &&
+        data.ownerId == request.auth.uid &&
+        data.serverCreatedAt is timestamp &&
+        data.serverCreatedAt == request.time &&
+        data.serverUpdatedAt is timestamp &&
+        data.serverUpdatedAt == request.time;
+    }
+
+    function hasValidAuditUpdate() {
+      return incoming().id == existing().id &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().serverCreatedAt == existing().serverCreatedAt &&
+        incoming().serverUpdatedAt is timestamp &&
+        incoming().serverUpdatedAt == request.time;
+    }
+
+    // --- Entity Validation Helpers ---
+
+    function isValidAdminUser(data, docId) {
+      return data.keys().hasAll(['uid', 'email', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.uid is string && data.uid == docId && data.uid.size() <= 128 &&
+        data.email is string && data.email.size() <= 254 &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidUserPublic(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'ownerId', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'role', 'ownerId', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.uid is string && data.uid == userId && data.uid.size() <= 128 &&
+        data.displayName is string && data.displayName.size() <= 120 &&
+        data.role is string && data.role in ['manager', 'driver'] && data.role.size() <= 20 &&
+        data.ownerId is string && data.ownerId == userId && data.ownerId.size() <= 128 &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidUserPrivate(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'ownerId', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'phone', 'ownerId', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.uid is string && data.uid == userId && data.uid.size() <= 128 &&
+        data.email is string && data.email.size() <= 254 &&
+        isOptionalString(data, 'phone', 32) &&
+        data.ownerId is string && data.ownerId == userId && data.ownerId.size() <= 128 &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidSettings(data, docId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'waterProductionCostPerLiter', 'defaultSellingPricePerLiter',
+          'dieselPricePerLiter', 'plantLocation', 'serverCreatedAt', 'serverUpdatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'waterProductionCostPerLiter', 'defaultSellingPricePerLiter',
+          'dieselPricePerLiter', 'truckDieselConsumptionPerKm', 'maintenanceAllowancePerTrip',
+          'driverWagePerTrip', 'stopDetectionMinutes', 'minMovementSpeedKmH', 'stopRadiusMeters',
+          'plantGeofenceMeters', 'gpsSampleIntervalSeconds', 'gpsWeakAccuracyMeters',
+          'gpsGapSeconds', 'plantLocation', 'customDistricts', 'demoDataActive',
+          'demoDataClearedAt', 'demoResetVersion', 'managerPin',
+          'serverCreatedAt', 'serverUpdatedAt'
+        ]) &&
+        data.id is string && data.id == docId && data.id.size() <= 128 &&
+        data.waterProductionCostPerLiter is number &&
+        data.defaultSellingPricePerLiter is number &&
+        data.dieselPricePerLiter is number &&
+        isOptionalNumber(data, 'truckDieselConsumptionPerKm') &&
+        isOptionalNumber(data, 'maintenanceAllowancePerTrip') &&
+        isOptionalNumber(data, 'driverWagePerTrip') &&
+        isOptionalNumber(data, 'stopDetectionMinutes') &&
+        isOptionalNumber(data, 'minMovementSpeedKmH') &&
+        isOptionalNumber(data, 'stopRadiusMeters') &&
+        isOptionalNumber(data, 'plantGeofenceMeters') &&
+        isOptionalNumber(data, 'gpsSampleIntervalSeconds') &&
+        isOptionalNumber(data, 'gpsWeakAccuracyMeters') &&
+        isOptionalNumber(data, 'gpsGapSeconds') &&
+        data.plantLocation is map &&
+        data.plantLocation.keys().hasAll(['name', 'city', 'lat', 'lng']) &&
+        data.plantLocation.keys().hasOnly(['name', 'city', 'lat', 'lng']) &&
+        data.plantLocation.name is string && data.plantLocation.name.size() <= 150 &&
+        data.plantLocation.city is string && data.plantLocation.city.size() <= 150 &&
+        data.plantLocation.lat is number &&
+        data.plantLocation.lng is number &&
+        isOptionalBoundedList(data, 'customDistricts', 300) &&
+        (!('customDistricts' in data) || data.customDistricts.size() == 0 || (data.customDistricts[0] is string && data.customDistricts[0].size() <= 150)) &&
+        isOptionalBool(data, 'demoDataActive') &&
+        isOptionalString(data, 'demoDataClearedAt', 64) &&
+        isOptionalNumber(data, 'demoResetVersion') &&
+        isOptionalString(data, 'managerPin', 32) &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidTruck(data, docId) {
+      return data.keys().hasAll(['id', 'ownerId', 'plateNumber', 'maxCapacityLiters', 'status', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'code', 'plateNumber', 'model', 'maxCapacityLiters',
+          'currentWaterLiters', 'driverId', 'driverName', 'driverPhone', 'status',
+          'lastLat', 'lastLng', 'lastSpeed', 'lastUpdateTimestamp', 'lastEvent',
+          'currentTripId', 'odometerKm', 'serverCreatedAt', 'serverUpdatedAt'
+        ]) &&
+        data.id is string && data.id == docId && data.id.size() <= 128 &&
+        isOptionalString(data, 'code', 64) &&
+        data.plateNumber is string && data.plateNumber.size() <= 64 &&
+        isOptionalString(data, 'model', 120) &&
+        data.maxCapacityLiters is number &&
+        isOptionalNumber(data, 'currentWaterLiters') &&
+        isOptionalString(data, 'driverId', 128) &&
+        isOptionalString(data, 'driverName', 120) &&
+        isOptionalString(data, 'driverPhone', 32) &&
+        data.status is string && data.status in ['idle', 'loading', 'on_trip', 'maintenance'] && data.status.size() <= 24 &&
+        isOptionalNumber(data, 'lastLat') &&
+        isOptionalNumber(data, 'lastLng') &&
+        isOptionalNumber(data, 'lastSpeed') &&
+        isOptionalString(data, 'lastUpdateTimestamp', 64) &&
+        isOptionalString(data, 'lastEvent', 32) &&
+        isOptionalString(data, 'currentTripId', 128) &&
+        isOptionalNumber(data, 'odometerKm') &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidDriverAccount(data, docId) {
+      return data.keys().hasAll(['id', 'ownerId', 'name', 'username', 'phone', 'password', 'status', 'createdAt', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'name', 'username', 'phone', 'password', 'licenseNumber',
+          'status', 'createdAt', 'createdBy', 'approvedAt', 'approvedBy',
+          'rejectedAt', 'rejectionReason', 'lastLoginAt', 'isDemo',
+          'serverCreatedAt', 'serverUpdatedAt'
+        ]) &&
+        data.id is string && data.id == docId && data.id.size() <= 128 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.username is string && data.username.size() >= 1 && data.username.size() <= 64 &&
+        data.phone is string && data.phone.size() >= 1 && data.phone.size() <= 32 &&
+        data.password is string && data.password.size() >= 4 && data.password.size() <= 128 &&
+        isOptionalString(data, 'licenseNumber', 64) &&
+        data.status is string && data.status in ['pending', 'approved', 'rejected', 'suspended'] && data.status.size() <= 24 &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        isOptionalString(data, 'createdBy', 24) &&
+        isOptionalString(data, 'approvedAt', 64) &&
+        isOptionalString(data, 'approvedBy', 120) &&
+        isOptionalString(data, 'rejectedAt', 64) &&
+        isOptionalString(data, 'rejectionReason', 500) &&
+        isOptionalString(data, 'lastLoginAt', 64) &&
+        isOptionalBool(data, 'isDemo') &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidCustomer(data, docId) {
+      return data.keys().hasAll(['id', 'ownerId', 'name', 'phone', 'district', 'lat', 'lng', 'tankCapacityLiters', 'createdAt', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'customerId', 'name', 'phone', 'altPhone', 'district',
+          'addressDetails', 'lat', 'lng', 'tankCapacityLiters', 'tankRemainingLiters',
+          'notes', 'createdAt', 'isActive', 'totalOrdersCount', 'totalLitersDelivered',
+          'isOfflineCreated', 'serverCreatedAt', 'serverUpdatedAt'
+        ]) &&
+        data.id is string && data.id == docId && data.id.size() <= 128 &&
+        isOptionalString(data, 'customerId', 64) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 150 &&
+        data.phone is string && data.phone.size() <= 32 &&
+        isOptionalString(data, 'altPhone', 32) &&
+        data.district is string && data.district.size() >= 1 && data.district.size() <= 150 &&
+        isOptionalString(data, 'addressDetails', 500) &&
+        data.lat is number &&
+        data.lng is number &&
+        data.tankCapacityLiters is number &&
+        isOptionalNumber(data, 'tankRemainingLiters') &&
+        isOptionalString(data, 'notes', 1000) &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        isOptionalBool(data, 'isActive') &&
+        isOptionalNumber(data, 'totalOrdersCount') &&
+        isOptionalNumber(data, 'totalLitersDelivered') &&
+        isOptionalBool(data, 'isOfflineCreated') &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidOrder(data, docId) {
+      return data.keys().hasAll(['id', 'ownerId', 'customerName', 'phone', 'district', 'requestedLiters', 'status', 'createdAt', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'orderNumber', 'customerId', 'customerName', 'phone', 'district',
+          'addressDetails', 'lat', 'lng', 'tankCapacity', 'tankRemainingLiters',
+          'requestedLiters', 'pricePerLiter', 'totalAmount', 'source', 'createdAt',
+          'scheduledDate', 'notes', 'status', 'tripId', 'isUrgent', 'duplicateWarning',
+          'duplicateMatchedOrderId', 'serverCreatedAt', 'serverUpdatedAt'
+        ]) &&
+        data.id is string && data.id == docId && data.id.size() <= 128 &&
+        isOptionalString(data, 'orderNumber', 64) &&
+        isOptionalString(data, 'customerId', 128) &&
+        data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 150 &&
+        data.phone is string && data.phone.size() <= 32 &&
+        data.district is string && data.district.size() >= 1 && data.district.size() <= 150 &&
+        isOptionalString(data, 'addressDetails', 500) &&
+        isOptionalNumber(data, 'lat') &&
+        isOptionalNumber(data, 'lng') &&
+        isOptionalNumber(data, 'tankCapacity') &&
+        isOptionalNumber(data, 'tankRemainingLiters') &&
+        data.requestedLiters is number &&
+        isOptionalNumber(data, 'pricePerLiter') &&
+        isOptionalNumber(data, 'totalAmount') &&
+        isOptionalString(data, 'source', 32) &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        isOptionalString(data, 'scheduledDate', 64) &&
+        isOptionalString(data, 'notes', 1000) &&
+        data.status is string && data.status.size() <= 32 &&
+        isOptionalString(data, 'tripId', 128) &&
+        isOptionalBool(data, 'isUrgent') &&
+        isOptionalBool(data, 'duplicateWarning') &&
+        isOptionalString(data, 'duplicateMatchedOrderId', 64) &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidTrip(data, docId) {
+      return data.keys().hasAll(['id', 'ownerId', 'tripNumber', 'status', 'customerStops', 'orderIds', 'proposedAt', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'tripNumber', 'date', 'truckId', 'driverId', 'driverName', 'truckPlate',
+          'initialLoadLiters', 'deliveredLiters', 'remainingLiters', 'status', 'syncStatus',
+          'createdByRole', 'driverAcceptanceStatus', 'driverRespondedAt', 'driverResponseReason',
+          'customerStops', 'orderIds', 'proposedAt', 'submittedAt', 'approvedAt', 'approvedBy',
+          'rejectedAt', 'rejectedBy', 'rejectionReason', 'returnedForEditReason', 'startedAt',
+          'startLocation', 'returnedToPlantAt', 'returnLocation', 'completedAt', 'closedAt',
+          'closedBy', 'reconciledAt', 'lastSyncedAt', 'gpsPoints', 'detectedStops', 'gpsGaps',
+          'movingMinutes', 'stoppedMinutes', 'auditLogs', 'modificationRequests',
+          'estimatedDistanceKm', 'actualDistanceKm', 'estimatedFuelLiters', 'actualFuelLiters',
+          'fuelCost', 'productionCost', 'driverWageShare', 'maintenanceShare', 'otherExpensesShare',
+          'totalCost', 'actualCost', 'expectedRevenue', 'actualRevenue', 'expectedProfit',
+          'actualProfit', 'profitMarginPercent', 'capacityUtilizationPercent',
+          'departureRecommendation', 'recommendationReason', 'notes',
+          'serverCreatedAt', 'serverUpdatedAt'
+        ]) &&
+        data.id is string && data.id == docId && data.id.size() <= 128 &&
+        data.tripNumber is string && data.tripNumber.size() <= 64 &&
+        isOptionalString(data, 'date', 32) &&
+        isOptionalString(data, 'truckId', 128) &&
+        isOptionalString(data, 'driverId', 128) &&
+        isOptionalString(data, 'driverName', 120) &&
+        isOptionalString(data, 'truckPlate', 64) &&
+        isOptionalNumber(data, 'initialLoadLiters') &&
+        isOptionalNumber(data, 'deliveredLiters') &&
+        isOptionalNumber(data, 'remainingLiters') &&
+        data.status is string && data.status.size() <= 40 &&
+        isOptionalString(data, 'syncStatus', 32) &&
+        isOptionalString(data, 'createdByRole', 20) &&
+        isOptionalString(data, 'driverAcceptanceStatus', 32) &&
+        isOptionalString(data, 'driverRespondedAt', 64) &&
+        isOptionalString(data, 'driverResponseReason', 500) &&
+        data.customerStops is list && data.customerStops.size() <= 50 &&
+        data.orderIds is list && data.orderIds.size() <= 50 &&
+        (data.orderIds.size() == 0 || (data.orderIds[0] is string && data.orderIds[0].size() <= 128)) &&
+        data.proposedAt is string && data.proposedAt.size() <= 64 &&
+        isOptionalString(data, 'submittedAt', 64) &&
+        isOptionalString(data, 'approvedAt', 64) &&
+        isOptionalString(data, 'approvedBy', 120) &&
+        isOptionalString(data, 'rejectedAt', 64) &&
+        isOptionalString(data, 'rejectedBy', 120) &&
+        isOptionalString(data, 'rejectionReason', 500) &&
+        isOptionalString(data, 'returnedForEditReason', 500) &&
+        isOptionalString(data, 'startedAt', 64) &&
+        isOptionalMap(data, 'startLocation') &&
+        isOptionalString(data, 'returnedToPlantAt', 64) &&
+        isOptionalMap(data, 'returnLocation') &&
+        isOptionalString(data, 'completedAt', 64) &&
+        isOptionalString(data, 'closedAt', 64) &&
+        isOptionalString(data, 'closedBy', 120) &&
+        isOptionalString(data, 'reconciledAt', 64) &&
+        isOptionalString(data, 'lastSyncedAt', 64) &&
+        isOptionalBoundedList(data, 'gpsPoints', 2000) &&
+        isOptionalBoundedList(data, 'detectedStops', 200) &&
+        isOptionalBoundedList(data, 'gpsGaps', 200) &&
+        isOptionalNumber(data, 'movingMinutes') &&
+        isOptionalNumber(data, 'stoppedMinutes') &&
+        isOptionalBoundedList(data, 'auditLogs', 500) &&
+        isOptionalBoundedList(data, 'modificationRequests', 50) &&
+        isOptionalNumber(data, 'estimatedDistanceKm') &&
+        isOptionalNumber(data, 'actualDistanceKm') &&
+        isOptionalNumber(data, 'estimatedFuelLiters') &&
+        isOptionalNumber(data, 'actualFuelLiters') &&
+        isOptionalNumber(data, 'fuelCost') &&
+        isOptionalNumber(data, 'productionCost') &&
+        isOptionalNumber(data, 'driverWageShare') &&
+        isOptionalNumber(data, 'maintenanceShare') &&
+        isOptionalNumber(data, 'otherExpensesShare') &&
+        isOptionalNumber(data, 'totalCost') &&
+        isOptionalNumber(data, 'actualCost') &&
+        isOptionalNumber(data, 'expectedRevenue') &&
+        isOptionalNumber(data, 'actualRevenue') &&
+        isOptionalNumber(data, 'expectedProfit') &&
+        isOptionalNumber(data, 'actualProfit') &&
+        isOptionalNumber(data, 'profitMarginPercent') &&
+        isOptionalNumber(data, 'capacityUtilizationPercent') &&
+        isOptionalString(data, 'departureRecommendation', 32) &&
+        isOptionalString(data, 'recommendationReason', 500) &&
+        isOptionalString(data, 'notes', 1000) &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidInvoice(data, docId) {
+      return data.keys().hasAll(['id', 'ownerId', 'invoiceNumber', 'tripId', 'customerName', 'totalAmount', 'createdAt', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'invoiceNumber', 'orderId', 'orderNumber', 'tripId', 'tripNumber',
+          'customerId', 'customerName', 'phone', 'district', 'requestedLiters',
+          'deliveredLiters', 'pricePerLiter', 'totalAmount', 'paidAmount', 'remainingAmount',
+          'paymentMethod', 'createdAt', 'driverName', 'isReconciled', 'notes',
+          'serverCreatedAt', 'serverUpdatedAt'
+        ]) &&
+        data.id is string && data.id == docId && data.id.size() <= 128 &&
+        data.invoiceNumber is string && data.invoiceNumber.size() <= 64 &&
+        isOptionalString(data, 'orderId', 128) &&
+        isOptionalString(data, 'orderNumber', 64) &&
+        data.tripId is string && data.tripId.size() <= 128 &&
+        isOptionalString(data, 'tripNumber', 64) &&
+        isOptionalString(data, 'customerId', 128) &&
+        data.customerName is string && data.customerName.size() <= 150 &&
+        isOptionalString(data, 'phone', 32) &&
+        isOptionalString(data, 'district', 150) &&
+        isOptionalNumber(data, 'requestedLiters') &&
+        isOptionalNumber(data, 'deliveredLiters') &&
+        isOptionalNumber(data, 'pricePerLiter') &&
+        data.totalAmount is number &&
+        isOptionalNumber(data, 'paidAmount') &&
+        isOptionalNumber(data, 'remainingAmount') &&
+        isOptionalString(data, 'paymentMethod', 20) &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        isOptionalString(data, 'driverName', 120) &&
+        isOptionalBool(data, 'isReconciled') &&
+        isOptionalString(data, 'notes', 1000) &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidReconciliation(data, docId) {
+      return data.keys().hasAll(['id', 'ownerId', 'reconciliationNumber', 'tripId', 'status', 'createdAt', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'reconciliationNumber', 'tripId', 'tripNumber', 'driverId',
+          'driverName', 'date', 'totalInvoicedAmount', 'totalCashCollected',
+          'actualCashHandedOver', 'authorizedExpensesDeducted', 'differenceAmount',
+          'status', 'notes', 'approvedBy', 'createdAt', 'serverCreatedAt', 'serverUpdatedAt'
+        ]) &&
+        data.id is string && data.id == docId && data.id.size() <= 128 &&
+        data.reconciliationNumber is string && data.reconciliationNumber.size() <= 64 &&
+        data.tripId is string && data.tripId.size() <= 128 &&
+        isOptionalString(data, 'tripNumber', 64) &&
+        isOptionalString(data, 'driverId', 128) &&
+        isOptionalString(data, 'driverName', 120) &&
+        isOptionalString(data, 'date', 32) &&
+        isOptionalNumber(data, 'totalInvoicedAmount') &&
+        isOptionalNumber(data, 'totalCashCollected') &&
+        isOptionalNumber(data, 'actualCashHandedOver') &&
+        isOptionalNumber(data, 'authorizedExpensesDeducted') &&
+        isOptionalNumber(data, 'differenceAmount') &&
+        data.status is string && data.status.size() <= 32 &&
+        isOptionalString(data, 'notes', 1000) &&
+        isOptionalString(data, 'approvedBy', 120) &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidExpense(data, docId) {
+      return data.keys().hasAll(['id', 'ownerId', 'expenseNumber', 'date', 'category', 'description', 'amount', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'expenseNumber', 'date', 'category', 'description',
+          'amount', 'liters', 'tripId', 'tripNumber', 'receiptNumber', 'createdBy',
+          'serverCreatedAt', 'serverUpdatedAt'
+        ]) &&
+        data.id is string && data.id == docId && data.id.size() <= 128 &&
+        data.expenseNumber is string && data.expenseNumber.size() <= 64 &&
+        data.date is string && data.date.size() <= 32 &&
+        data.category is string && data.category.size() <= 32 &&
+        data.description is string && data.description.size() >= 1 && data.description.size() <= 500 &&
+        data.amount is number &&
+        isOptionalNumber(data, 'liters') &&
+        isOptionalString(data, 'tripId', 128) &&
+        isOptionalString(data, 'tripNumber', 64) &&
+        isOptionalString(data, 'receiptNumber', 64) &&
+        isOptionalString(data, 'createdBy', 120) &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidGpsEvent(data, docId) {
+      return data.keys().hasAll(['id', 'ownerId', 'tripId', 'timestamp', 'eventType', 'lat', 'lng', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'tripId', 'tripNumber', 'timestamp', 'eventType', 'lat', 'lng',
+          'speed', 'accuracy', 'customerId', 'customerName', 'source', 'sequenceNumber',
+          'isProcessed', 'serverCreatedAt', 'serverUpdatedAt'
+        ]) &&
+        data.id is string && data.id == docId && data.id.size() <= 128 &&
+        data.tripId is string && data.tripId.size() <= 128 &&
+        isOptionalString(data, 'tripNumber', 64) &&
+        data.timestamp is string && data.timestamp.size() <= 64 &&
+        data.eventType is string && data.eventType.size() <= 32 &&
+        data.lat is number &&
+        data.lng is number &&
+        isOptionalNumber(data, 'speed') &&
+        isOptionalNumber(data, 'accuracy') &&
+        isOptionalString(data, 'customerId', 128) &&
+        isOptionalString(data, 'customerName', 150) &&
+        isOptionalString(data, 'source', 32) &&
+        isOptionalNumber(data, 'sequenceNumber') &&
+        isOptionalBool(data, 'isProcessed') &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidNotification(data, docId) {
+      return data.keys().hasAll(['id', 'ownerId', 'createdAt', 'targetRole', 'title', 'message', 'isRead', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'createdAt', 'targetRole', 'actorRole', 'actorName', 'category',
+          'priority', 'title', 'message', 'tripId', 'tripNumber', 'orderId', 'directiveId',
+          'isRead', 'actionTab', 'serverCreatedAt', 'serverUpdatedAt'
+        ]) &&
+        data.id is string && data.id == docId && data.id.size() <= 128 &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        data.targetRole is string && data.targetRole in ['manager', 'driver'] && data.targetRole.size() <= 20 &&
+        isOptionalString(data, 'actorRole', 20) &&
+        isOptionalString(data, 'actorName', 120) &&
+        isOptionalString(data, 'category', 48) &&
+        isOptionalString(data, 'priority', 32) &&
+        data.title is string && data.title.size() <= 300 &&
+        data.message is string && data.message.size() <= 1000 &&
+        isOptionalString(data, 'tripId', 128) &&
+        isOptionalString(data, 'tripNumber', 64) &&
+        isOptionalString(data, 'orderId', 128) &&
+        isOptionalString(data, 'directiveId', 128) &&
+        data.isRead is bool &&
+        isOptionalString(data, 'actionTab', 40) &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    function isValidDirective(data, docId) {
+      return data.keys().hasAll(['id', 'ownerId', 'createdAt', 'createdBy', 'title', 'message', 'status', 'serverCreatedAt', 'serverUpdatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'ownerId', 'createdAt', 'createdBy', 'title', 'message', 'priority',
+          'tripId', 'tripNumber', 'customerId', 'customerName', 'status',
+          'acknowledgedAt', 'completedAt', 'driverReply', 'serverCreatedAt', 'serverUpdatedAt'
+        ]) &&
+        data.id is string && data.id == docId && data.id.size() <= 128 &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        data.createdBy is string && data.createdBy.size() <= 120 &&
+        data.title is string && data.title.size() <= 300 &&
+        data.message is string && data.message.size() <= 1500 &&
+        isOptionalString(data, 'priority', 20) &&
+        isOptionalString(data, 'tripId', 128) &&
+        isOptionalString(data, 'tripNumber', 64) &&
+        isOptionalString(data, 'customerId', 128) &&
+        isOptionalString(data, 'customerName', 150) &&
+        data.status is string && data.status in ['sent', 'acknowledged', 'completed'] && data.status.size() <= 24 &&
+        isOptionalString(data, 'acknowledgedAt', 64) &&
+        isOptionalString(data, 'completedAt', 64) &&
+        isOptionalString(data, 'driverReply', 1000) &&
+        data.serverCreatedAt is timestamp &&
+        data.serverUpdatedAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    // Connection check document (authenticated get only, no list or writes)
+    match /test/{docId} {
+      allow get: if isValidId(docId) && isSignedIn();
+      allow list, create, update, delete: if false;
+    }
+
+    // Admin registry (only existing admins can read/manage)
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+      allow create: if isValidId(userId) && isAdmin() && isValidAdminUser(incoming(), userId) && incoming().serverCreatedAt == request.time && incoming().serverUpdatedAt == request.time;
+      allow update: if isValidId(userId) && isAdmin() && isValidAdminUser(incoming(), userId) && incoming().uid == existing().uid && incoming().serverCreatedAt == existing().serverCreatedAt && incoming().serverUpdatedAt == request.time;
+      allow delete: if isValidId(userId) && isBootstrappedAdmin();
+    }
+
+    // User public profile + split private PII subcollection
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(userId) && isOwner(userId) && isValidUserPublic(incoming(), userId) && hasValidAuditCreate(incoming()) && (incoming().role == 'driver' || isBootstrappedAdmin());
+      allow update: if isValidId(userId) && (isAdmin() || isOwner(userId)) && isValidUserPublic(incoming(), userId) && hasValidAuditUpdate() && (isAdmin() || incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'serverUpdatedAt']));
+      allow delete: if isValidId(userId) && isAdmin();
+
+      match /private/{docId} {
+        allow get: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+        allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+        allow create: if isValidId(userId) && isValidId(docId) && isOwner(userId) && isValidUserPrivate(incoming(), userId) && hasValidAuditCreate(incoming());
+        allow update: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin()) && isValidUserPrivate(incoming(), userId) && hasValidAuditUpdate() && (isAdmin() || incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone', 'serverUpdatedAt']));
+        allow delete: if isValidId(userId) && isValidId(docId) && isAdmin();
+      }
+    }
+
+    match /settings/{configId} {
+      allow get: if isValidId(configId) && (isAdmin() || isDocOwner());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(configId) && isSignedIn() && isValidSettings(incoming(), configId) && hasValidAuditCreate(incoming());
+      allow update: if isValidId(configId) && (isAdmin() || isDocOwner()) && isValidSettings(incoming(), configId) && hasValidAuditUpdate() && (
+        isAdmin() ||
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'waterProductionCostPerLiter', 'defaultSellingPricePerLiter', 'dieselPricePerLiter',
+          'truckDieselConsumptionPerKm', 'maintenanceAllowancePerTrip', 'driverWagePerTrip',
+          'stopDetectionMinutes', 'minMovementSpeedKmH', 'stopRadiusMeters', 'plantGeofenceMeters',
+          'gpsSampleIntervalSeconds', 'gpsWeakAccuracyMeters', 'gpsGapSeconds',
+          'plantLocation', 'customDistricts', 'demoDataActive', 'demoDataClearedAt',
+          'demoResetVersion', 'managerPin', 'serverUpdatedAt'
+        ])
+      );
+      allow delete: if isValidId(configId) && (isAdmin() || isDocOwner());
+    }
+
+    match /trucks/{truckId} {
+      allow get: if isValidId(truckId) && (isAdmin() || isDocOwner());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(truckId) && isSignedIn() && isValidTruck(incoming(), truckId) && hasValidAuditCreate(incoming());
+      allow update: if isValidId(truckId) && (isAdmin() || isDocOwner()) && isValidTruck(incoming(), truckId) && hasValidAuditUpdate() && (
+        isAdmin() ||
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'code', 'plateNumber', 'model', 'maxCapacityLiters', 'currentWaterLiters',
+          'driverId', 'driverName', 'driverPhone', 'status', 'lastLat', 'lastLng',
+          'lastSpeed', 'lastUpdateTimestamp', 'lastEvent', 'currentTripId', 'odometerKm',
+          'serverUpdatedAt'
+        ])
+      );
+      allow delete: if isValidId(truckId) && (isAdmin() || isDocOwner());
+    }
+
+    match /driverAccounts/{accountId} {
+      allow get: if isValidId(accountId) && (isAdmin() || isDocOwner());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(accountId) && isSignedIn() && isValidDriverAccount(incoming(), accountId) && hasValidAuditCreate(incoming()) && (isAdmin() || incoming().status == 'pending');
+      allow update: if isValidId(accountId) && (isAdmin() || isDocOwner()) && isValidDriverAccount(incoming(), accountId) && hasValidAuditUpdate() && (
+        isAdmin() ||
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'username', 'phone', 'password', 'licenseNumber', 'lastLoginAt', 'serverUpdatedAt'
+        ])
+      );
+      allow delete: if isValidId(accountId) && (isAdmin() || isDocOwner());
+    }
+
+    match /customers/{customerId} {
+      allow get: if isValidId(customerId) && (isAdmin() || isDocOwner());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(customerId) && isSignedIn() && isValidCustomer(incoming(), customerId) && hasValidAuditCreate(incoming());
+      allow update: if isValidId(customerId) && (isAdmin() || isDocOwner()) && isValidCustomer(incoming(), customerId) && hasValidAuditUpdate() && (
+        isAdmin() ||
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'customerId', 'name', 'phone', 'altPhone', 'district', 'addressDetails',
+          'lat', 'lng', 'tankCapacityLiters', 'tankRemainingLiters', 'notes',
+          'isActive', 'totalOrdersCount', 'totalLitersDelivered', 'serverUpdatedAt'
+        ])
+      );
+      allow delete: if isValidId(customerId) && (isAdmin() || isDocOwner());
+    }
+
+    match /orders/{orderId} {
+      allow get: if isValidId(orderId) && (isAdmin() || isDocOwner());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(orderId) && isSignedIn() && isValidOrder(incoming(), orderId) && hasValidAuditCreate(incoming());
+      allow update: if isValidId(orderId) && (isAdmin() || isDocOwner()) && isValidOrder(incoming(), orderId) && hasValidAuditUpdate() && (
+        isAdmin() ||
+        (
+          existing().status != 'delivered' && existing().status != 'cancelled' &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'orderNumber', 'customerId', 'customerName', 'phone', 'district',
+            'addressDetails', 'lat', 'lng', 'tankCapacity', 'tankRemainingLiters',
+            'requestedLiters', 'pricePerLiter', 'totalAmount', 'scheduledDate',
+            'notes', 'status', 'tripId', 'isUrgent', 'duplicateWarning',
+            'duplicateMatchedOrderId', 'serverUpdatedAt'
+          ])
+        )
+      );
+      allow delete: if isValidId(orderId) && (isAdmin() || isDocOwner());
+    }
+
+    match /trips/{tripId} {
+      allow get: if isValidId(tripId) && (isAdmin() || isDocOwner());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(tripId) && isSignedIn() && isValidTrip(incoming(), tripId) && hasValidAuditCreate(incoming());
+      allow update: if isValidId(tripId) && (isAdmin() || isDocOwner()) && isValidTrip(incoming(), tripId) && hasValidAuditUpdate() && (
+        isAdmin() ||
+        (
+          existing().status != 'closed' &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'initialLoadLiters', 'deliveredLiters', 'remainingLiters', 'status', 'syncStatus',
+            'driverAcceptanceStatus', 'driverRespondedAt', 'driverResponseReason',
+            'customerStops', 'orderIds', 'submittedAt', 'approvedAt', 'approvedBy',
+            'rejectedAt', 'rejectedBy', 'rejectionReason', 'returnedForEditReason',
+            'startedAt', 'startLocation', 'returnedToPlantAt', 'returnLocation',
+            'completedAt', 'closedAt', 'closedBy', 'reconciledAt', 'lastSyncedAt',
+            'gpsPoints', 'detectedStops', 'gpsGaps', 'movingMinutes', 'stoppedMinutes',
+            'auditLogs', 'modificationRequests', 'estimatedDistanceKm', 'actualDistanceKm',
+            'estimatedFuelLiters', 'actualFuelLiters', 'fuelCost', 'productionCost',
+            'driverWageShare', 'maintenanceShare', 'otherExpensesShare', 'totalCost',
+            'actualCost', 'expectedRevenue', 'actualRevenue', 'expectedProfit',
+            'actualProfit', 'profitMarginPercent', 'capacityUtilizationPercent',
+            'departureRecommendation', 'recommendationReason', 'notes', 'serverUpdatedAt'
+          ])
+        )
+      );
+      allow delete: if isValidId(tripId) && (isAdmin() || isDocOwner());
+    }
+
+    match /invoices/{invoiceId} {
+      allow get: if isValidId(invoiceId) && (isAdmin() || isDocOwner());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(invoiceId) && isSignedIn() && isValidInvoice(incoming(), invoiceId) && hasValidAuditCreate(incoming());
+      allow update: if isValidId(invoiceId) && (isAdmin() || isDocOwner()) && isValidInvoice(incoming(), invoiceId) && hasValidAuditUpdate() && (
+        isAdmin() ||
+        incoming().diff(existing()).affectedKeys().hasOnly(['paidAmount', 'remainingAmount', 'isReconciled', 'notes', 'serverUpdatedAt'])
+      );
+      allow delete: if isValidId(invoiceId) && (isAdmin() || isDocOwner());
+    }
+
+    match /reconciliations/{recId} {
+      allow get: if isValidId(recId) && (isAdmin() || isDocOwner());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(recId) && isSignedIn() && isValidReconciliation(incoming(), recId) && hasValidAuditCreate(incoming());
+      allow update: if isValidId(recId) && (isAdmin() || isDocOwner()) && isValidReconciliation(incoming(), recId) && hasValidAuditUpdate() && (
+        isAdmin() ||
+        (
+          existing().status != 'approved_reconciled' &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'notes', 'approvedBy', 'actualCashHandedOver', 'authorizedExpensesDeducted', 'differenceAmount', 'serverUpdatedAt'])
+        )
+      );
+      allow delete: if isValidId(recId) && (isAdmin() || isDocOwner());
+    }
+
+    match /expenses/{expenseId} {
+      allow get: if isValidId(expenseId) && (isAdmin() || isDocOwner());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(expenseId) && isSignedIn() && isValidExpense(incoming(), expenseId) && hasValidAuditCreate(incoming());
+      allow update: if isValidId(expenseId) && (isAdmin() || isDocOwner()) && isValidExpense(incoming(), expenseId) && hasValidAuditUpdate() && (
+        isAdmin() ||
+        incoming().diff(existing()).affectedKeys().hasOnly(['description', 'amount', 'liters', 'receiptNumber', 'category', 'serverUpdatedAt'])
+      );
+      allow delete: if isValidId(expenseId) && (isAdmin() || isDocOwner());
+    }
+
+    match /gpsEvents/{eventId} {
+      allow get: if isValidId(eventId) && (isAdmin() || isDocOwner());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(eventId) && isSignedIn() && isValidGpsEvent(incoming(), eventId) && hasValidAuditCreate(incoming());
+      allow update: if isValidId(eventId) && (isAdmin() || isDocOwner()) && isValidGpsEvent(incoming(), eventId) && hasValidAuditUpdate() && (
+        isAdmin() ||
+        incoming().diff(existing()).affectedKeys().hasOnly(['isProcessed', 'serverUpdatedAt'])
+      );
+      allow delete: if isValidId(eventId) && (isAdmin() || isDocOwner());
+    }
+
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && (isAdmin() || isDocOwner());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(notificationId) && isSignedIn() && isValidNotification(incoming(), notificationId) && hasValidAuditCreate(incoming());
+      allow update: if isValidId(notificationId) && (isAdmin() || isDocOwner()) && isValidNotification(incoming(), notificationId) && hasValidAuditUpdate() && (
+        isAdmin() ||
+        incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'serverUpdatedAt'])
+      );
+      allow delete: if isValidId(notificationId) && (isAdmin() || isDocOwner());
+    }
+
+    match /directives/{directiveId} {
+      allow get: if isValidId(directiveId) && (isAdmin() || isDocOwner());
+      allow list: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerId == request.auth.uid);
+      allow create: if isValidId(directiveId) && isSignedIn() && isValidDirective(incoming(), directiveId) && hasValidAuditCreate(incoming());
+      allow update: if isValidId(directiveId) && (isAdmin() || isDocOwner()) && isValidDirective(incoming(), directiveId) && hasValidAuditUpdate() && (
+        isAdmin() ||
+        (
+          existing().status != 'completed' &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'acknowledgedAt', 'completedAt', 'driverReply', 'serverUpdatedAt'])
+        )
+      );
+      allow delete: if isValidId(directiveId) && (isAdmin() || isDocOwner());
+    }
+  }
+}

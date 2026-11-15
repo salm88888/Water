@@ -4,7 +4,7 @@
  * Miyahna - Driver Accounts (Manager-Approved + Passwords) & Truck Assets Management
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   Truck,
   Phone,
@@ -25,6 +25,7 @@ import {
   XCircle,
   Users,
   Clock,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { DriverAccount } from '../../types';
@@ -68,6 +69,10 @@ export const DriverAndTruckView: React.FC = () => {
   const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
   const [successToast, setSuccessToast] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [isSubmittingModal, setIsSubmittingModal] = useState(false);
+  const [busyAccountActionKey, setBusyAccountActionKey] = useState<string | null>(null);
+  const modalLockRef = useRef(false);
+  const accountActionLockRef = useRef(false);
 
   const [newAccountForm, setNewAccountForm] = useState({
     name: '',
@@ -121,58 +126,101 @@ export const DriverAndTruckView: React.FC = () => {
 
   const handleCreateAccount = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (modalLockRef.current) return;
+    modalLockRef.current = true;
+    setIsSubmittingModal(true);
     setFormError(null);
-    const res = await createDriverAccount(newAccountForm);
-    if (!res.success) {
-      setFormError(res.error || 'تعذر إنشاء الحساب');
-      return;
+    try {
+      const res = await createDriverAccount(newAccountForm);
+      if (!res.success) {
+        setFormError(res.error || 'تعذر إنشاء الحساب');
+        return;
+      }
+      setShowCreateAccountModal(false);
+      setNewAccountForm({ name: '', phone: '', username: '', licenseNumber: '', password: '', assignToTruck: true });
+      showToast('تم إنشاء حساب السائق واعتماده بكلمة مرور بنجاح');
+    } finally {
+      modalLockRef.current = false;
+      setIsSubmittingModal(false);
     }
-    setShowCreateAccountModal(false);
-    setNewAccountForm({ name: '', phone: '', username: '', licenseNumber: '', password: '', assignToTruck: true });
-    showToast('تم إنشاء حساب السائق واعتماده بكلمة مرور بنجاح');
   };
 
   const handleSaveEditAccount = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingAccount) return;
+    if (!editingAccount || modalLockRef.current) return;
+    modalLockRef.current = true;
+    setIsSubmittingModal(true);
     setFormError(null);
-    const res = await updateDriverAccount(editingAccount.id, editAccountForm);
-    if (!res.success) {
-      setFormError(res.error || 'تعذر تحديث الحساب');
-      return;
+    try {
+      const res = await updateDriverAccount(editingAccount.id, editAccountForm);
+      if (!res.success) {
+        setFormError(res.error || 'تعذر تحديث الحساب');
+        return;
+      }
+      setEditingAccount(null);
+      showToast('تم تحديث بيانات وكلمة مرور السائق بنجاح');
+    } finally {
+      modalLockRef.current = false;
+      setIsSubmittingModal(false);
     }
-    setEditingAccount(null);
-    showToast('تم تحديث بيانات وكلمة مرور السائق بنجاح');
   };
 
   const handleSaveDriver = async (e: React.FormEvent) => {
     e.preventDefault();
-    await updateSettings({
-      driverWagePerTrip: Number(driverForm.driverWagePerTrip),
-    });
-    await updateTruck({
-      driverName: driverForm.driverName,
-      driverPhone: driverForm.driverPhone,
-    });
-    setShowEditDriverModal(false);
-    showToast('تم حفظ وتحديث بيانات السائق وهاتف التواصل بنجاح');
+    if (modalLockRef.current) return;
+    modalLockRef.current = true;
+    setIsSubmittingModal(true);
+    try {
+      await updateSettings({
+        driverWagePerTrip: Number(driverForm.driverWagePerTrip),
+      });
+      await updateTruck({
+        driverName: driverForm.driverName,
+        driverPhone: driverForm.driverPhone,
+      });
+      setShowEditDriverModal(false);
+      showToast('تم حفظ وتحديث بيانات السائق وهاتف التواصل بنجاح');
+    } finally {
+      modalLockRef.current = false;
+      setIsSubmittingModal(false);
+    }
   };
 
   const handleSaveTruck = async (e: React.FormEvent) => {
     e.preventDefault();
-    await updateTruck({
-      code: truckForm.code,
-      plateNumber: truckForm.plateNumber,
-      model: truckForm.model,
-      maxCapacityLiters: Number(truckForm.maxCapacityLiters),
-      odometerKm: Number(truckForm.odometerKm),
-    });
-    await updateSettings({
-      truckDieselConsumptionPerKm: Number(truckForm.truckDieselConsumptionPerKm),
-      maintenanceAllowancePerTrip: Number(truckForm.maintenanceAllowancePerTrip),
-    });
-    setShowEditTruckModal(false);
-    showToast('تم حفظ وتحديث مواصفات وبيانات الوايت بنجاح');
+    if (modalLockRef.current) return;
+    modalLockRef.current = true;
+    setIsSubmittingModal(true);
+    try {
+      await updateTruck({
+        code: truckForm.code,
+        plateNumber: truckForm.plateNumber,
+        model: truckForm.model,
+        maxCapacityLiters: Number(truckForm.maxCapacityLiters),
+        odometerKm: Number(truckForm.odometerKm),
+      });
+      await updateSettings({
+        truckDieselConsumptionPerKm: Number(truckForm.truckDieselConsumptionPerKm),
+        maintenanceAllowancePerTrip: Number(truckForm.maintenanceAllowancePerTrip),
+      });
+      setShowEditTruckModal(false);
+      showToast('تم حفظ وتحديث مواصفات وبيانات الوايت بنجاح');
+    } finally {
+      modalLockRef.current = false;
+      setIsSubmittingModal(false);
+    }
+  };
+
+  const runAccountAction = async (key: string, fn: () => Promise<void>) => {
+    if (accountActionLockRef.current) return;
+    accountActionLockRef.current = true;
+    setBusyAccountActionKey(key);
+    try {
+      await fn();
+    } finally {
+      accountActionLockRef.current = false;
+      setBusyAccountActionKey(null);
+    }
   };
 
   return (
@@ -259,14 +307,22 @@ export const DriverAndTruckView: React.FC = () => {
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={async () => {
-                      await approveDriverAccount(acc.id);
-                      showToast(`تم اعتماد حساب السائق ${acc.name} وتفعيل دخوله`);
-                    }}
-                    className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold flex items-center justify-center gap-1.5"
+                    type="button"
+                    disabled={Boolean(busyAccountActionKey)}
+                    onClick={() =>
+                      runAccountAction(`approve:${acc.id}`, async () => {
+                        await approveDriverAccount(acc.id);
+                        showToast(`تم اعتماد حساب السائق ${acc.name} وتفعيل دخوله`);
+                      })
+                    }
+                    className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-lg font-bold flex items-center justify-center gap-1.5"
                   >
-                    <CheckCircle2 className="w-4 h-4" />
-                    <span>اعتماد الحساب</span>
+                    {busyAccountActionKey === `approve:${acc.id}` ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4" />
+                    )}
+                    <span>{busyAccountActionKey === `approve:${acc.id}` ? 'جاري الاعتماد...' : 'اعتماد الحساب'}</span>
                   </button>
                   <button
                     onClick={() => {
@@ -382,31 +438,48 @@ export const DriverAndTruckView: React.FC = () => {
                   <div className="flex flex-wrap items-center gap-1.5 shrink-0">
                     {acc.status !== 'approved' && (
                       <button
-                        onClick={async () => {
-                          await approveDriverAccount(acc.id);
-                          showToast(`تم اعتماد حساب السائق ${acc.name}`);
-                        }}
-                        className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold flex items-center gap-1"
+                        type="button"
+                        disabled={Boolean(busyAccountActionKey)}
+                        onClick={() =>
+                          runAccountAction(`approve:${acc.id}`, async () => {
+                            await approveDriverAccount(acc.id);
+                            showToast(`تم اعتماد حساب السائق ${acc.name}`);
+                          })
+                        }
+                        className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white rounded-lg font-bold flex items-center gap-1"
                       >
-                        <ShieldCheck className="w-3.5 h-3.5" />
+                        {busyAccountActionKey === `approve:${acc.id}` ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                        )}
                         <span>اعتماد</span>
                       </button>
                     )}
 
                     {acc.status === 'approved' && !isAssigned && (
                       <button
-                        onClick={async () => {
-                          await assignDriverToTruck(acc.id);
-                          showToast(`تم تعيين ${acc.name} كسائق للوايت الحالي`);
-                        }}
-                        className="px-2.5 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-200 rounded-lg font-bold flex items-center gap-1"
+                        type="button"
+                        disabled={Boolean(busyAccountActionKey)}
+                        onClick={() =>
+                          runAccountAction(`assign:${acc.id}`, async () => {
+                            await assignDriverToTruck(acc.id);
+                            showToast(`تم تعيين ${acc.name} كسائق للوايت الحالي`);
+                          })
+                        }
+                        className="px-2.5 py-1.5 bg-sky-50 hover:bg-sky-100 disabled:opacity-60 text-sky-800 border border-sky-200 rounded-lg font-bold flex items-center gap-1"
                       >
-                        <Truck className="w-3.5 h-3.5" />
+                        {busyAccountActionKey === `assign:${acc.id}` ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Truck className="w-3.5 h-3.5" />
+                        )}
                         <span>تعيين للوايت</span>
                       </button>
                     )}
 
                     <button
+                      type="button"
                       onClick={() => {
                         setFormError(null);
                         setEditingAccount(acc);
@@ -426,34 +499,50 @@ export const DriverAndTruckView: React.FC = () => {
 
                     {(acc.status === 'approved' || acc.status === 'suspended') && (
                       <button
-                        onClick={async () => {
-                          await toggleSuspendDriverAccount(acc.id);
-                          showToast(
-                            acc.status === 'suspended'
-                              ? `تم إعادة تفعيل حساب ${acc.name}`
-                              : `تم إيقاف حساب ${acc.name} مؤقتاً`
-                          );
-                        }}
-                        className={`px-2.5 py-1.5 rounded-lg font-semibold flex items-center gap-1 ${
+                        type="button"
+                        disabled={Boolean(busyAccountActionKey)}
+                        onClick={() =>
+                          runAccountAction(`suspend:${acc.id}`, async () => {
+                            await toggleSuspendDriverAccount(acc.id);
+                            showToast(
+                              acc.status === 'suspended'
+                                ? `تم إعادة تفعيل حساب ${acc.name}`
+                                : `تم إيقاف حساب ${acc.name} مؤقتاً`
+                            );
+                          })
+                        }
+                        className={`px-2.5 py-1.5 rounded-lg font-semibold flex items-center gap-1 disabled:opacity-60 ${
                           acc.status === 'suspended'
                             ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
                             : 'bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100'
                         }`}
                       >
-                        <Ban className="w-3.5 h-3.5" />
+                        {busyAccountActionKey === `suspend:${acc.id}` ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Ban className="w-3.5 h-3.5" />
+                        )}
                         <span>{acc.status === 'suspended' ? 'تفعيل' : 'إيقاف'}</span>
                       </button>
                     )}
 
                     <button
-                      onClick={async () => {
-                        await deleteDriverAccount(acc.id);
-                        showToast(`تم حذف حساب ${acc.name}`);
-                      }}
-                      className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg"
+                      type="button"
+                      disabled={Boolean(busyAccountActionKey)}
+                      onClick={() =>
+                        runAccountAction(`delete:${acc.id}`, async () => {
+                          await deleteDriverAccount(acc.id);
+                          showToast(`تم حذف حساب ${acc.name}`);
+                        })
+                      }
+                      className="p-1.5 bg-rose-50 hover:bg-rose-100 disabled:opacity-60 text-rose-700 border border-rose-200 rounded-lg"
                       title="حذف الحساب"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      {busyAccountActionKey === `delete:${acc.id}` ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3.5 h-3.5" />
+                      )}
                     </button>
                   </div>
                 </div>
@@ -696,12 +785,12 @@ export const DriverAndTruckView: React.FC = () => {
                 <span className="font-semibold text-slate-700">تعيين هذا السائق للوايت الحالي فور الإنشاء</span>
               </label>
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
-                <button type="button" onClick={() => setShowCreateAccountModal(false)} className="px-4 py-2 border border-slate-200 rounded-lg">
+                <button type="button" disabled={isSubmittingModal} onClick={() => setShowCreateAccountModal(false)} className="px-4 py-2 border border-slate-200 rounded-lg disabled:opacity-50">
                   إلغاء
                 </button>
-                <button type="submit" className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-lg flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4" />
-                  <span>اعتماد وحفظ الحساب</span>
+                <button type="submit" disabled={isSubmittingModal} className="px-5 py-2 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white font-bold rounded-lg flex items-center gap-1.5">
+                  {isSubmittingModal ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                  <span>{isSubmittingModal ? 'جاري الحفظ...' : 'اعتماد وحفظ الحساب'}</span>
                 </button>
               </div>
             </form>
@@ -783,12 +872,12 @@ export const DriverAndTruckView: React.FC = () => {
                 </div>
               </div>
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
-                <button type="button" onClick={() => setEditingAccount(null)} className="px-4 py-2 border border-slate-200 rounded-lg">
+                <button type="button" disabled={isSubmittingModal} onClick={() => setEditingAccount(null)} className="px-4 py-2 border border-slate-200 rounded-lg disabled:opacity-50">
                   إلغاء
                 </button>
-                <button type="submit" className="px-5 py-2 bg-sky-700 hover:bg-sky-800 text-white font-bold rounded-lg flex items-center gap-1.5">
-                  <Save className="w-4 h-4" />
-                  <span>حفظ التعديلات</span>
+                <button type="submit" disabled={isSubmittingModal} className="px-5 py-2 bg-sky-700 hover:bg-sky-800 disabled:opacity-60 text-white font-bold rounded-lg flex items-center gap-1.5">
+                  {isSubmittingModal ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  <span>{isSubmittingModal ? 'جاري الحفظ...' : 'حفظ التعديلات'}</span>
                 </button>
               </div>
             </form>
@@ -811,21 +900,26 @@ export const DriverAndTruckView: React.FC = () => {
             <div className="flex justify-end gap-2">
               <button
                 type="button"
+                disabled={Boolean(busyAccountActionKey)}
                 onClick={() => setRejectingAccount(null)}
-                className="px-4 py-2 border border-slate-200 rounded-lg"
+                className="px-4 py-2 border border-slate-200 rounded-lg disabled:opacity-50"
               >
                 تراجع
               </button>
               <button
                 type="button"
-                onClick={async () => {
-                  await rejectDriverAccount(rejectingAccount.id, rejectReason);
-                  setRejectingAccount(null);
-                  showToast('تم رفض طلب الحساب');
-                }}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg"
+                disabled={Boolean(busyAccountActionKey)}
+                onClick={() =>
+                  runAccountAction(`reject:${rejectingAccount.id}`, async () => {
+                    await rejectDriverAccount(rejectingAccount.id, rejectReason);
+                    setRejectingAccount(null);
+                    showToast('تم رفض طلب الحساب');
+                  })
+                }
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white font-bold rounded-lg flex items-center gap-1.5"
               >
-                تأكيد الرفض
+                {busyAccountActionKey === `reject:${rejectingAccount.id}` && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{busyAccountActionKey === `reject:${rejectingAccount.id}` ? 'جاري التنفيذ...' : 'تأكيد الرفض'}</span>
               </button>
             </div>
           </div>
@@ -874,12 +968,12 @@ export const DriverAndTruckView: React.FC = () => {
                 />
               </div>
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
-                <button type="button" onClick={() => setShowEditDriverModal(false)} className="px-4 py-2 border border-slate-200 rounded-lg">
+                <button type="button" disabled={isSubmittingModal} onClick={() => setShowEditDriverModal(false)} className="px-4 py-2 border border-slate-200 rounded-lg disabled:opacity-50">
                   إلغاء
                 </button>
-                <button type="submit" className="px-5 py-2 bg-sky-700 hover:bg-sky-800 text-white font-bold rounded-lg flex items-center gap-1.5">
-                  <Save className="w-4 h-4" />
-                  <span>حفظ</span>
+                <button type="submit" disabled={isSubmittingModal} className="px-5 py-2 bg-sky-700 hover:bg-sky-800 disabled:opacity-60 text-white font-bold rounded-lg flex items-center gap-1.5">
+                  {isSubmittingModal ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  <span>{isSubmittingModal ? 'جاري الحفظ...' : 'حفظ'}</span>
                 </button>
               </div>
             </form>
@@ -952,12 +1046,12 @@ export const DriverAndTruckView: React.FC = () => {
                 </div>
               </div>
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
-                <button type="button" onClick={() => setShowEditTruckModal(false)} className="px-4 py-2 border border-slate-200 rounded-lg">
+                <button type="button" disabled={isSubmittingModal} onClick={() => setShowEditTruckModal(false)} className="px-4 py-2 border border-slate-200 rounded-lg disabled:opacity-50">
                   إلغاء
                 </button>
-                <button type="submit" className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg flex items-center gap-1.5">
-                  <Save className="w-4 h-4" />
-                  <span>حفظ</span>
+                <button type="submit" disabled={isSubmittingModal} className="px-5 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-bold rounded-lg flex items-center gap-1.5">
+                  {isSubmittingModal ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  <span>{isSubmittingModal ? 'جاري الحفظ...' : 'حفظ'}</span>
                 </button>
               </div>
             </form>

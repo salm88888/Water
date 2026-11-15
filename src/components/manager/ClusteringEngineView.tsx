@@ -6,7 +6,7 @@
  * calculates TSP route, evaluates fuel & economic profit, and suggests dispatch decision.
  */
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   GitMerge,
   Truck,
@@ -20,6 +20,7 @@ import {
   Sparkles,
   ShieldCheck,
   ChevronRight,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { ClusterProposal, Order } from '../../types';
@@ -38,6 +39,7 @@ export const ClusteringEngineView: React.FC = () => {
   const [selectedProposalIndex, setSelectedProposalIndex] = useState(0);
   const [isCreatingTrip, setIsCreatingTrip] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const createTripLockRef = useRef(false);
 
   const pendingCount = orders.filter(
     (o) => o.status === 'new' || o.status === 'waiting_clustering' || o.status === 'confirmed'
@@ -46,6 +48,8 @@ export const ClusteringEngineView: React.FC = () => {
   const currentProposal: ClusterProposal | undefined = clusterProposals[selectedProposalIndex];
 
   const handleApproveAndCreateTrip = async (proposal: ClusterProposal) => {
+    if (createTripLockRef.current) return;
+    createTripLockRef.current = true;
     setIsCreatingTrip(true);
     try {
       const newTrip = await createTripFromCluster(proposal);
@@ -56,6 +60,7 @@ export const ClusteringEngineView: React.FC = () => {
     } catch (e) {
       console.error(e);
     } finally {
+      createTripLockRef.current = false;
       setIsCreatingTrip(false);
     }
   };
@@ -195,11 +200,12 @@ export const ClusteringEngineView: React.FC = () => {
 
                   {/* Manager Approval Action */}
                   <button
+                    type="button"
                     onClick={() => handleApproveAndCreateTrip(currentProposal)}
                     disabled={isCreatingTrip}
                     className="px-5 py-2.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-700 transition-colors shadow-sm flex items-center justify-center gap-2 whitespace-nowrap disabled:opacity-50"
                   >
-                    <ShieldCheck className="w-4 h-4" />
+                    {isCreatingTrip ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
                     <span>{isCreatingTrip ? 'جاري الاعتماد...' : 'اعتماد الرحلة وتكليف السائق'}</span>
                   </button>
                 </div>

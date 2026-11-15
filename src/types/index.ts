@@ -412,6 +412,7 @@ export interface SystemSettings {
     lat: number;
     lng: number;
   };
+  customDistricts?: string[];
   demoDataActive: boolean;
   demoDataClearedAt?: string;
   demoResetVersion?: number;

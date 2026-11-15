@@ -4,7 +4,7 @@
  * Miyahna - New Water Order Modal with Tank Auto-fill & Duplicate Detection
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Droplet,
@@ -14,9 +14,12 @@ import {
   MapPin,
   Clock,
   Sparkles,
+  Loader2,
+  UserPlus,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { OrderSource } from '../../types';
+import { DistrictSelectField } from '../common/DistrictSelectField';
 
 interface NewOrderModalProps {
   isOpen: boolean;
@@ -24,12 +27,12 @@ interface NewOrderModalProps {
 }
 
 export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose }) => {
-  const { customers, settings, addOrder } = useApp();
+  const { customers, allDistricts, settings, addOrder } = useApp();
 
-  const [selectedCustomerId, setSelectedCustomerId] = useState<string>(customers[0]?.id || '');
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string>(customers[0]?.id || '__new__');
   const [customerName, setCustomerName] = useState(customers[0]?.name || '');
   const [phone, setPhone] = useState(customers[0]?.phone || '');
-  const [district, setDistrict] = useState(customers[0]?.district || 'حي الروضة');
+  const [district, setDistrict] = useState(customers[0]?.district || '');
   const [addressDetails, setAddressDetails] = useState(customers[0]?.addressDetails || '');
   const [tankCapacity, setTankCapacity] = useState<number>(customers[0]?.tankCapacityLiters || 2000);
   const [tankRemaining, setTankRemaining] = useState<number>(0);
@@ -40,23 +43,31 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
+  const submitLockRef = useRef(false);
 
   useEffect(() => {
     if (isOpen) {
-      const first = customers.find((cust) => cust.id === selectedCustomerId) || customers[0];
+      const first = customers[0];
       if (first) {
         setSelectedCustomerId(first.id);
         setCustomerName(first.name);
         setPhone(first.phone);
-        setDistrict(first.district);
+        setDistrict(first.district || '');
         setAddressDetails(first.addressDetails);
         setTankCapacity(first.tankCapacityLiters);
         setTankRemaining(0);
         setRequestedLiters(first.tankCapacityLiters);
       } else {
+        setSelectedCustomerId('__new__');
+        setCustomerName('');
+        setPhone('');
+        setDistrict('');
+        setAddressDetails('');
+        setTankCapacity(2000);
         setTankRemaining(0);
-        setRequestedLiters(tankCapacity);
+        setRequestedLiters(2000);
       }
+      setDuplicateWarning(null);
       setPricePerLiter(settings.defaultSellingPricePerLiter);
     }
   }, [isOpen]);
@@ -65,14 +76,23 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
 
   const handleCustomerChange = (custId: string) => {
     setSelectedCustomerId(custId);
+    if (custId === '__new__') {
+      setCustomerName('');
+      setPhone('');
+      setDistrict('');
+      setAddressDetails('');
+      setTankCapacity(2000);
+      setTankRemaining(0);
+      setRequestedLiters(2000);
+      return;
+    }
     const c = customers.find((cust) => cust.id === custId);
     if (c) {
       setCustomerName(c.name);
       setPhone(c.phone);
-      setDistrict(c.district);
+      setDistrict(c.district || '');
       setAddressDetails(c.addressDetails);
       setTankCapacity(c.tankCapacityLiters);
-      // Always assume customer tank is empty (0 liters)
       setTankRemaining(0);
       setRequestedLiters(c.tankCapacityLiters);
     }
@@ -80,18 +100,24 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!customerName || !phone || requestedLiters <= 0) return;
+    if (submitLockRef.current || isSubmitting) return;
+    if (!customerName.trim() || !phone.trim() || requestedLiters <= 0 || !district.trim()) return;
 
+    submitLockRef.current = true;
     setIsSubmitting(true);
     setDuplicateWarning(null);
 
     try {
-      const selectedCust = customers.find((c) => c.id === selectedCustomerId);
+      const selectedCust =
+        selectedCustomerId && selectedCustomerId !== '__new__'
+          ? customers.find((c) => c.id === selectedCustomerId)
+          : undefined;
+
       const res = await addOrder({
-        customerId: selectedCustomerId,
-        customerName,
-        phone,
-        district,
+        customerId: selectedCust?.id,
+        customerName: customerName.trim(),
+        phone: phone.trim(),
+        district: district.trim(),
         addressDetails,
         lat: selectedCust?.lat || settings.plantLocation.lat + 0.005,
         lng: selectedCust?.lng || settings.plantLocation.lng + 0.005,
@@ -107,13 +133,14 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
 
       if (res.duplicateWarning) {
         setDuplicateWarning('تنبيه: تم تسجيل الطلب مع وجود تنبيه باحتمال تكرار طلب سابق لنفس العميل!');
-        setTimeout(() => onClose(), 2500);
+        setTimeout(() => onClose(), 2200);
       } else {
         onClose();
       }
     } catch (err) {
       console.error(err);
     } finally {
+      submitLockRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -143,22 +170,30 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4 text-xs">
-          {/* Pick Existing Customer */}
+          {/* Pick Existing Customer or Auto-Create New */}
           <div>
             <label className="block text-slate-700 font-semibold mb-1">
-              اختر عميل مسجل (أو عدل البيانات يدوياً)
+              اختر عميل مسجل (أو أنشئ عميلاً جديداً يُحفظ تلقائياً في قاعدة العملاء)
             </label>
             <select
+              disabled={isSubmitting}
               value={selectedCustomerId}
               onChange={(e) => handleCustomerChange(e.target.value)}
-              className="w-full p-2.5 border border-slate-200 rounded-lg bg-white"
+              className="w-full p-2.5 border border-slate-200 rounded-lg bg-white disabled:opacity-60"
             >
+              <option value="__new__">+ عميل جديد (سيتم حفظه تلقائياً في قاعدة بيانات العملاء)</option>
               {customers.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name} - {c.district} ({c.phone}) - خزان {c.tankCapacityLiters}L
                 </option>
               ))}
             </select>
+            {selectedCustomerId === '__new__' && (
+              <p className="text-[11px] text-emerald-700 mt-1 flex items-center gap-1 font-medium">
+                <UserPlus className="w-3.5 h-3.5 shrink-0" />
+                <span>سيتم حفظ بيانات هذا العميل تلقائياً في قاعدة العملاء عند إرسال الطلب.</span>
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -167,9 +202,16 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
               <input
                 type="text"
                 required
+                disabled={isSubmitting}
                 value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
-                className="w-full p-2.5 border border-slate-200 rounded-lg"
+                onChange={(e) => {
+                  setCustomerName(e.target.value);
+                  if (selectedCustomerId !== '__new__') {
+                    setSelectedCustomerId('__new__');
+                  }
+                }}
+                placeholder="مثال: أحمد محمد مبخوت"
+                className="w-full p-2.5 border border-slate-200 rounded-lg disabled:opacity-60"
               />
             </div>
             <div>
@@ -177,29 +219,36 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
               <input
                 type="text"
                 required
+                disabled={isSubmitting}
                 value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                className="w-full p-2.5 border border-slate-200 rounded-lg font-mono"
+                onChange={(e) => {
+                  setPhone(e.target.value);
+                  if (selectedCustomerId !== '__new__') {
+                    setSelectedCustomerId('__new__');
+                  }
+                }}
+                placeholder="71xxxxxxx"
+                className="w-full p-2.5 border border-slate-200 rounded-lg font-mono disabled:opacity-60"
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-slate-700 font-semibold mb-1">الحي بمأرب</label>
-              <input
-                type="text"
-                value={district}
-                onChange={(e) => setDistrict(e.target.value)}
-                className="w-full p-2.5 border border-slate-200 rounded-lg"
-              />
-            </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <DistrictSelectField
+              value={district}
+              onChange={setDistrict}
+              districts={allDistricts}
+              label="المنطقة / الحي (مديرية الوادي - مأرب)"
+              theme="light"
+              disabled={isSubmitting}
+            />
             <div>
               <label className="block text-slate-700 font-semibold mb-1">مصدر ورود الطلب</label>
               <select
+                disabled={isSubmitting}
                 value={source}
                 onChange={(e) => setSource(e.target.value as OrderSource)}
-                className="w-full p-2.5 border border-slate-200 rounded-lg bg-white"
+                className="w-full p-2.5 border border-slate-200 rounded-lg bg-white disabled:opacity-60"
               >
                 <option value="phone">اتصال هاتفي</option>
                 <option value="whatsapp">واتساب</option>
@@ -298,17 +347,19 @@ export const NewOrderModal: React.FC<NewOrderModalProps> = ({ isOpen, onClose })
           <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-3">
             <button
               type="button"
+              disabled={isSubmitting}
               onClick={onClose}
-              className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 font-medium"
+              className="px-4 py-2 border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 font-medium disabled:opacity-50"
             >
               إلغاء
             </button>
             <button
               type="submit"
               disabled={isSubmitting}
-              className="px-5 py-2 bg-sky-700 text-white rounded-lg hover:bg-sky-800 font-semibold shadow-sm disabled:opacity-50"
+              className="px-5 py-2 bg-sky-700 text-white rounded-lg hover:bg-sky-800 font-semibold shadow-sm disabled:opacity-60 flex items-center gap-2 cursor-pointer"
             >
-              {isSubmitting ? 'جاري الحفظ...' : 'تسجيل وإرسال للتجميع'}
+              {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
+              <span>{isSubmitting ? 'جاري إرسال الطلب...' : 'تسجيل وإرسال للتجميع'}</span>
             </button>
           </div>
         </form>

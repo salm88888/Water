@@ -15,12 +15,10 @@ import {
   Wifi,
   WifiOff,
   MapPin,
-  Play,
   CheckCircle,
   Phone,
   Plus,
   RefreshCw,
-  Droplet,
   Navigation,
   Clock,
   LogOut,
@@ -32,7 +30,6 @@ import {
   Database,
   Crosshair,
   ListChecks,
-  Square,
   Bell,
   Radio,
   CheckCheck,
@@ -40,14 +37,19 @@ import {
   MessageSquare,
   UserPlus,
   ShoppingCart,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Trip, TripCustomerStop, TripStatus } from '../../types';
 import { ManagerPinModal } from '../auth/ManagerPinModal';
 import { LocationPickerMapModal } from '../common/LocationPickerMapModal';
+import { DistrictSelectField } from '../common/DistrictSelectField';
 import { PWAInstallButton } from '../common/PWAInstallButton';
 import { TripTrackingMap } from '../manager/TripTrackingMapModal';
+import { DriverWeeklyFuelReport } from './DriverWeeklyFuelReport';
 import {
+  evaluatePlantDepartureTrigger,
+  evaluateTripCompletionReadiness,
   haversineDistanceMeters,
   isWithinPlantGeofence,
   requestScreenWakeLock,
@@ -93,15 +95,14 @@ export const DriverApp: React.FC = () => {
     lastAutoSyncResult,
     offlineState,
     requestTripModification,
-    startTrip,
+    triggerAutoDepartureTracking,
     recordGpsTelemetryPoint,
     completeTripReturn,
-    logDeliveryStop,
     addCustomer,
     addOrder,
+    allDistricts,
     syncOfflineData,
     settings,
-    logoutToRoleSelection,
     selectRole,
     savedRole,
     setViewMode,
@@ -129,6 +130,18 @@ export const DriverApp: React.FC = () => {
   const [declineReasonInput, setDeclineReasonInput] = useState('');
   const [respondError, setRespondError] = useState<string | null>(null);
   const [respondingTripId, setRespondingTripId] = useState<string | null>(null);
+
+  // Double-click / duplicate command prevention locks & loading states
+  const [isSavingFieldOrder, setIsSavingFieldOrder] = useState(false);
+  const [isSubmittingMod, setIsSubmittingMod] = useState(false);
+  const [busyDirectiveId, setBusyDirectiveId] = useState<string | null>(null);
+  const fieldOrderLockRef = useRef(false);
+  const returnTripLockRef = useRef(false);
+  const autoStoppedTripRef = useRef<Record<string, boolean>>({});
+  const modLockRef = useRef(false);
+  const tripRespondLockRef = useRef(false);
+  const syncLockRef = useRef(false);
+  const directiveLockRef = useRef(false);
 
   // Manager-proposed trips awaiting Driver's acceptance or written reply
   const pendingManagerTripRequests = useMemo(
@@ -225,13 +238,8 @@ export const DriverApp: React.FC = () => {
   const [modStops, setModStops] = useState<TripCustomerStop[]>([]);
   const [modFeedback, setModFeedback] = useState<string | null>(null);
 
-  // Stop Delivery State
+  // Selected Stop Index (route guidance only — no water/money inputs)
   const [selectedStopIndex, setSelectedStopIndex] = useState(0);
-  const [deliveredInput, setDeliveredInput] = useState<number>(0);
-  const [paidInput, setPaidInput] = useState<number>(0);
-  const [deliveryNotes, setDeliveryNotes] = useState<string>('');
-  const [unloadingActive, setUnloadingActive] = useState<boolean>(false);
-  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   // Field New Customer / Water Order Form (Driver submits ONLY orders or customers)
   const [submissionMode, setSubmissionMode] = useState<'order_existing' | 'order_new' | 'customer_only'>('order_new');
@@ -241,7 +249,7 @@ export const DriverApp: React.FC = () => {
   const [newOrderForm, setNewOrderForm] = useState({
     customerName: '',
     phone: '',
-    district: 'حي الروضة',
+    district: '',
     addressDetails: '',
     tankCapacity: 2000,
     requestedLiters: 2000,
@@ -263,6 +271,11 @@ export const DriverApp: React.FC = () => {
   const [wakeLockActive, setWakeLockActive] = useState(false);
   const lastSampleTimeRef = useRef<number>(0);
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
+  const departureStreakRef = useRef<
+    Array<{ lat: number; lng: number; speedKmH: number; accuracy: number; timestamp: string }>
+  >([]);
+  const autoDepartureBusyRef = useRef(false);
+  const cooldownSuppressedUntilRef = useRef<number>(0);
 
   // Sync current trip status feedback
   const [tripActionError, setTripActionError] = useState<string | null>(null);
@@ -407,102 +420,260 @@ export const DriverApp: React.FC = () => {
     };
   }, [activeTrip?.id, activeTrip?.status, settings.gpsSampleIntervalSeconds]);
 
-  // Plant Geofence Check for active trip
+  // Continuous Plant Perimeter Monitor: runs when NO trip is 'in_progress' to auto-start tracking on plant departure
+  useEffect(() => {
+    const hasActiveInProgress = trips.some((t) => t.status === 'in_progress');
+    if (hasActiveInProgress) {
+      departureStreakRef.current = [];
+      return;
+    }
+
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      return;
+    }
+
+    let isCancelled = false;
+    const watchId = navigator.geolocation.watchPosition(
+      async (pos) => {
+        if (isCancelled) return;
+        setGpsError(null);
+        const nowMs = Date.now();
+        const speedKmH =
+          pos.coords.speed !== null && !Number.isNaN(pos.coords.speed)
+            ? Number((pos.coords.speed * 3.6).toFixed(1))
+            : 0;
+        const accuracy = pos.coords.accuracy ? Math.round(pos.coords.accuracy) : 15;
+        const tsIso = new Date(pos.timestamp || nowMs).toISOString();
+
+        setLivePosition({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          speedKmH,
+          accuracy,
+          timestamp: tsIso,
+        });
+
+        const evalResult = evaluatePlantDepartureTrigger({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy,
+          speedKmH,
+          settings,
+        });
+
+        // Reset manager-stop cooldown immediately if truck has returned inside plant perimeter
+        if (evalResult.isReliableAccuracy && evalResult.insidePlant) {
+          cooldownSuppressedUntilRef.current = 0;
+          departureStreakRef.current = [];
+          return;
+        }
+
+        // Ignore weak-accuracy readings without clearing or incrementing the departure streak
+        if (!evalResult.isReliableAccuracy) {
+          return;
+        }
+
+        if (!evalResult.outsideTriggerZone) {
+          departureStreakRef.current = [];
+          return;
+        }
+
+        // Check client-side cooldown right after a manager stop
+        if (Date.now() < cooldownSuppressedUntilRef.current) {
+          return;
+        }
+
+        const recentManagerStopped = trips.find(
+          (t) =>
+            (t.status === 'completed_pending_review' || t.status === 'closed') &&
+            (t.auditLogs || []).some((a) => a.action === 'إيقاف التتبع من قبل المدير')
+        );
+        if (recentManagerStopped) {
+          const stopMs = new Date(
+            recentManagerStopped.completedAt ||
+              recentManagerStopped.auditLogs?.slice(-1)[0]?.timestamp ||
+              0
+          ).getTime();
+          if (Number.isFinite(stopMs) && Date.now() - stopMs < 120 * 1000) {
+            const stopPt =
+              recentManagerStopped.returnLocation ||
+              (recentManagerStopped.gpsPoints || []).slice(-1)[0];
+            if (
+              stopPt &&
+              haversineDistanceMeters(pos.coords.latitude, pos.coords.longitude, stopPt.lat, stopPt.lng) < 250
+            ) {
+              return;
+            }
+          }
+        }
+
+        departureStreakRef.current = [
+          ...departureStreakRef.current.slice(-3),
+          {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            speedKmH,
+            accuracy,
+            timestamp: tsIso,
+          },
+        ];
+
+        const confirmedDeparture =
+          departureStreakRef.current.length >= 2 || evalResult.highConfidenceFastDeparture;
+
+        if (confirmedDeparture && !autoDepartureBusyRef.current) {
+          autoDepartureBusyRef.current = true;
+          try {
+            const seedPoints = [...departureStreakRef.current];
+            const res = await triggerAutoDepartureTracking({
+              lat: pos.coords.latitude,
+              lng: pos.coords.longitude,
+              speedKmH,
+              accuracy,
+              timestamp: tsIso,
+              seedPoints,
+            });
+            if (res.success && res.trip) {
+              setSelectedTripId(res.trip.id);
+              departureStreakRef.current = [];
+              setPlannerToast(
+                `تم رصد ابتعاد الوايت عن محيط المصنع (${evalResult.distanceFromPlantMeters} م) — بدأ التتبع الجغرافي تلقائياً.`
+              );
+              setTimeout(() => setPlannerToast(null), 5000);
+            } else if (res.suppressedCooldown) {
+              cooldownSuppressedUntilRef.current = Date.now() + 60 * 1000;
+              departureStreakRef.current = [];
+            }
+          } finally {
+            autoDepartureBusyRef.current = false;
+          }
+        }
+      },
+      (err) => {
+        if (isCancelled) return;
+        if (err.code === err.PERMISSION_DENIED) {
+          setGpsError('يرجى السماح بصلاحية الموقع (GPS) لمراقبة محيط المصنع وبدء التتبع تلقائياً.');
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 5000,
+        timeout: 15000,
+      }
+    );
+
+    return () => {
+      isCancelled = true;
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [trips, settings, triggerAutoDepartureTracking]);
+
+  // Starting point reference for current tracked trip
+  const tripOrigin = useMemo(() => {
+    if (!activeTrip) return settings.plantLocation;
+    const startInsidePlant =
+      activeTrip.startLocation !== undefined &&
+      isWithinPlantGeofence(activeTrip.startLocation.lat, activeTrip.startLocation.lng, settings).inside;
+    if (activeTrip.id.startsWith('trip-auto-') || startInsidePlant) {
+      return activeTrip.startLocation || settings.plantLocation;
+    }
+    const firstGpsPt = (activeTrip.gpsPoints || []).find(
+      (p) => p.source === 'gps_watch' || p.source === 'gps_android_fg'
+    );
+    if (firstGpsPt) return { lat: firstGpsPt.lat, lng: firstGpsPt.lng };
+    if (activeTrip.startLocation) return activeTrip.startLocation;
+    return settings.plantLocation;
+  }, [activeTrip, settings]);
+
+  const completionReadiness = useMemo(() => {
+    if (!activeTrip || activeTrip.status !== 'in_progress') return null;
+    return evaluateTripCompletionReadiness({
+      trip: activeTrip,
+      settings,
+      originOverride: tripOrigin,
+      candidateReturnLocation: livePosition
+        ? {
+            lat: livePosition.lat,
+            lng: livePosition.lng,
+            accuracy: livePosition.accuracy,
+          }
+        : undefined,
+    });
+  }, [activeTrip, settings, tripOrigin, livePosition]);
+
+  // Automatic return-to-origin / starting point detection to auto-stop GPS tracking
+  useEffect(() => {
+    if (!activeTrip || activeTrip.status !== 'in_progress') return;
+    if (!livePosition || !completionReadiness?.qualified) return;
+
+    if (!autoStoppedTripRef.current[activeTrip.id] && !returnTripLockRef.current) {
+      autoStoppedTripRef.current[activeTrip.id] = true;
+      returnTripLockRef.current = true;
+      completeTripReturn({
+        tripId: activeTrip.id,
+        lat: livePosition.lat,
+        lng: livePosition.lng,
+        detectedAutomatically: true,
+      })
+        .then((completed) => {
+          if (completed) {
+            setPlannerToast('تم رصد العودة المؤكدة إلى نقطة الانطلاق بعد تنفيذ الرحلة — توقف التتبع تلقائياً.');
+            setTimeout(() => setPlannerToast(null), 5000);
+          } else {
+            delete autoStoppedTripRef.current[activeTrip.id];
+          }
+        })
+        .catch(() => {
+          delete autoStoppedTripRef.current[activeTrip.id];
+        })
+        .finally(() => {
+          returnTripLockRef.current = false;
+        });
+    }
+  }, [activeTrip, livePosition, completionReadiness, completeTripReturn]);
+
+  // Starting point / Plant Geofence Check for active trip
   const latestTrackPoint =
     livePosition ||
     (activeTrip?.gpsPoints && activeTrip.gpsPoints.length > 0
       ? activeTrip.gpsPoints[activeTrip.gpsPoints.length - 1]
       : null);
 
+  const originDistanceMeters = latestTrackPoint
+    ? Math.round(
+        haversineDistanceMeters(
+          latestTrackPoint.lat,
+          latestTrackPoint.lng,
+          tripOrigin.lat,
+          tripOrigin.lng
+        )
+      )
+    : Math.round(
+        haversineDistanceMeters(
+          truck.lastLat || tripOrigin.lat,
+          truck.lastLng || tripOrigin.lng,
+          tripOrigin.lat,
+          tripOrigin.lng
+        )
+      );
+
   const plantGeofenceCheck = latestTrackPoint
-    ? isWithinPlantGeofence(latestTrackPoint.lat, latestTrackPoint.lng, settings)
+    ? {
+        inside:
+          isWithinPlantGeofence(latestTrackPoint.lat, latestTrackPoint.lng, settings).inside ||
+          originDistanceMeters <= settings.plantGeofenceMeters,
+        distanceMeters: originDistanceMeters,
+      }
     : {
         inside: false,
-        distanceMeters: Math.round(
-          haversineDistanceMeters(
-            truck.lastLat || settings.plantLocation.lat,
-            truck.lastLng || settings.plantLocation.lng,
-            settings.plantLocation.lat,
-            settings.plantLocation.lng
-          )
-        ),
+        distanceMeters: originDistanceMeters,
       };
 
-  // Drivers cannot create/edit/submit trip plans; manager handles trip planning.
-
-  const handleStartTrip = async () => {
-    if (!activeTrip) return;
-    setTripActionError(null);
-    if (activeTrip.status !== 'approved') {
-      setTripActionError('ممنوع بدء الرحلة دون وجود موافقة صريحة من المدير.');
-      return;
-    }
-
-    const executeStart = async (lat?: number, lng?: number) => {
-      const res = await startTrip(activeTrip.id, lat, lng);
-      if (!res.success) {
-        setTripActionError(res.error || 'تعذر بدء الرحلة');
-      }
-    };
-
-    if (typeof navigator !== 'undefined' && navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => executeStart(pos.coords.latitude, pos.coords.longitude),
-        () => executeStart(settings.plantLocation.lat, settings.plantLocation.lng),
-        { enableHighAccuracy: true, timeout: 4000 }
-      );
-    } else {
-      await executeStart(settings.plantLocation.lat, settings.plantLocation.lng);
-    }
-  };
-
-  const handleConfirmReturnToPlant = async (detectedAutomatically: boolean) => {
-    if (!activeTrip) return;
-    const lat = livePosition?.lat ?? truck.lastLat ?? settings.plantLocation.lat;
-    const lng = livePosition?.lng ?? truck.lastLng ?? settings.plantLocation.lng;
-    await completeTripReturn({
-      tripId: activeTrip.id,
-      lat,
-      lng,
-      detectedAutomatically,
-    });
-  };
-
+  // Drivers cannot start, stop, or log water/cash deliveries — tracking is controlled by Manager approval & return geofence.
   const currentStop: TripCustomerStop | undefined = activeTrip?.customerStops[selectedStopIndex];
 
   const handleSelectStop = (index: number) => {
     setSelectedStopIndex(index);
-    const stop = activeTrip?.customerStops[index];
-    if (stop) {
-      setDeliveredInput(stop.deliveredLiters > 0 ? stop.deliveredLiters : stop.requestedLiters);
-      setPaidInput(stop.paidAmount > 0 ? stop.paidAmount : stop.totalAmount);
-      setDeliveryNotes(stop.notes || '');
-      setUnloadingActive(stop.status === 'unloading');
-    }
-  };
-
-  const handleConfirmDelivery = async () => {
-    if (!activeTrip || !currentStop) return;
-    setIsSubmitting(true);
-    try {
-      const remainingAmount = Math.max(0, deliveredInput * currentStop.pricePerLiter - paidInput);
-      await logDeliveryStop({
-        tripId: activeTrip.id,
-        orderId: currentStop.orderId,
-        deliveredLiters: Number(deliveredInput),
-        paidAmount: Number(paidInput),
-        remainingAmount,
-        notes: deliveryNotes,
-      });
-      setUnloadingActive(false);
-      if (selectedStopIndex < activeTrip.customerStops.length - 1) {
-        handleSelectStop(selectedStopIndex + 1);
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsSubmitting(false);
-    }
   };
 
   // Field Customer & Water Order submission (Driver raises Orders or Customers ONLY)
@@ -526,80 +697,104 @@ export const DriverApp: React.FC = () => {
 
   const handleSaveFieldOrder = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (fieldOrderLockRef.current) return;
+
+    const resolvedDistrict = newOrderForm.district.trim();
 
     if (submissionMode === 'order_existing') {
       const selected = customers.find((c) => c.id === selectedExistingCustomerId);
       if (!selected) return;
-      await addOrder({
-        customerId: selected.id,
-        customerName: selected.name,
-        phone: selected.phone,
-        district: selected.district,
-        addressDetails: selected.addressDetails,
-        lat: selected.lat,
-        lng: selected.lng,
-        tankCapacity: selected.tankCapacityLiters,
-        tankRemainingLiters: 0,
-        requestedLiters: Number(newOrderForm.requestedLiters) || selected.tankCapacityLiters,
-        pricePerLiter: settings.defaultSellingPricePerLiter,
-        totalAmount:
-          (Number(newOrderForm.requestedLiters) || selected.tankCapacityLiters) *
-          settings.defaultSellingPricePerLiter,
-        source: 'driver_manual',
-        isUrgent: newOrderForm.isUrgent,
-        notes: newOrderForm.notes,
-      });
-      setPlannerToast(`تم رفع طلب المياه للزبون (${selected.name}) وإرساله إلى المدير لإدراجه في رحلة.`);
+      fieldOrderLockRef.current = true;
+      setIsSavingFieldOrder(true);
+      try {
+        await addOrder({
+          customerId: selected.id,
+          customerName: selected.name,
+          phone: selected.phone,
+          district: selected.district,
+          addressDetails: selected.addressDetails,
+          lat: selected.lat,
+          lng: selected.lng,
+          tankCapacity: selected.tankCapacityLiters,
+          tankRemainingLiters: 0,
+          requestedLiters: Number(newOrderForm.requestedLiters) || selected.tankCapacityLiters,
+          pricePerLiter: settings.defaultSellingPricePerLiter,
+          totalAmount:
+            (Number(newOrderForm.requestedLiters) || selected.tankCapacityLiters) *
+            settings.defaultSellingPricePerLiter,
+          source: 'driver_manual',
+          isUrgent: newOrderForm.isUrgent,
+          notes: newOrderForm.notes,
+        });
+        setPlannerToast(`تم رفع طلب المياه للزبون (${selected.name}) وإرساله إلى المدير لإدراجه في رحلة.`);
+      } finally {
+        fieldOrderLockRef.current = false;
+        setIsSavingFieldOrder(false);
+      }
     } else if (submissionMode === 'customer_only') {
-      if (!newOrderForm.customerName.trim() || !newOrderForm.phone.trim()) return;
-      const createdCust = await addCustomer({
-        name: newOrderForm.customerName.trim(),
-        phone: newOrderForm.phone.trim(),
-        district: newOrderForm.district,
-        addressDetails: newOrderForm.addressDetails,
-        tankCapacityLiters: Number(newOrderForm.tankCapacity),
-        lat: newOrderForm.lat,
-        lng: newOrderForm.lng,
-        notes: newOrderForm.notes,
-      });
-      setPlannerToast(`تم رفع بيانات الزبون الجديد (${createdCust.name}) إلى لوحة المدير بنجاح.`);
+      if (!newOrderForm.customerName.trim() || !newOrderForm.phone.trim() || !resolvedDistrict) return;
+      fieldOrderLockRef.current = true;
+      setIsSavingFieldOrder(true);
+      try {
+        const createdCust = await addCustomer({
+          name: newOrderForm.customerName.trim(),
+          phone: newOrderForm.phone.trim(),
+          district: resolvedDistrict,
+          addressDetails: newOrderForm.addressDetails,
+          tankCapacityLiters: Number(newOrderForm.tankCapacity),
+          lat: newOrderForm.lat,
+          lng: newOrderForm.lng,
+          notes: newOrderForm.notes,
+        });
+        setPlannerToast(`تم رفع وحفظ بيانات الزبون الجديد (${createdCust.name}) في قاعدة البيانات بنجاح.`);
+      } finally {
+        fieldOrderLockRef.current = false;
+        setIsSavingFieldOrder(false);
+      }
     } else {
-      if (!newOrderForm.customerName.trim() || !newOrderForm.phone.trim()) return;
-      const createdCust = await addCustomer({
-        name: newOrderForm.customerName.trim(),
-        phone: newOrderForm.phone.trim(),
-        district: newOrderForm.district,
-        addressDetails: newOrderForm.addressDetails,
-        tankCapacityLiters: Number(newOrderForm.tankCapacity),
-        lat: newOrderForm.lat,
-        lng: newOrderForm.lng,
-      });
+      if (!newOrderForm.customerName.trim() || !newOrderForm.phone.trim() || !resolvedDistrict) return;
+      fieldOrderLockRef.current = true;
+      setIsSavingFieldOrder(true);
+      try {
+        const createdCust = await addCustomer({
+          name: newOrderForm.customerName.trim(),
+          phone: newOrderForm.phone.trim(),
+          district: resolvedDistrict,
+          addressDetails: newOrderForm.addressDetails,
+          tankCapacityLiters: Number(newOrderForm.tankCapacity),
+          lat: newOrderForm.lat,
+          lng: newOrderForm.lng,
+        });
 
-      await addOrder({
-        customerId: createdCust.id,
-        customerName: newOrderForm.customerName.trim(),
-        phone: newOrderForm.phone.trim(),
-        district: newOrderForm.district,
-        addressDetails: newOrderForm.addressDetails,
-        lat: newOrderForm.lat,
-        lng: newOrderForm.lng,
-        tankCapacity: Number(newOrderForm.tankCapacity),
-        tankRemainingLiters: 0,
-        requestedLiters: Number(newOrderForm.requestedLiters),
-        pricePerLiter: settings.defaultSellingPricePerLiter,
-        totalAmount: Number(newOrderForm.requestedLiters) * settings.defaultSellingPricePerLiter,
-        source: 'driver_manual',
-        isUrgent: newOrderForm.isUrgent,
-        notes: newOrderForm.notes,
-      });
-      setPlannerToast('تم رفع الزبون وطلب المياه بنجاح إلى لوحة المدير لإدراجه في مخطط الرحلة.');
+        await addOrder({
+          customerId: createdCust.id,
+          customerName: newOrderForm.customerName.trim(),
+          phone: newOrderForm.phone.trim(),
+          district: resolvedDistrict,
+          addressDetails: newOrderForm.addressDetails,
+          lat: newOrderForm.lat,
+          lng: newOrderForm.lng,
+          tankCapacity: Number(newOrderForm.tankCapacity),
+          tankRemainingLiters: 0,
+          requestedLiters: Number(newOrderForm.requestedLiters),
+          pricePerLiter: settings.defaultSellingPricePerLiter,
+          totalAmount: Number(newOrderForm.requestedLiters) * settings.defaultSellingPricePerLiter,
+          source: 'driver_manual',
+          isUrgent: newOrderForm.isUrgent,
+          notes: newOrderForm.notes,
+        });
+        setPlannerToast('تم حفظ الزبون في قاعدة العملاء ورفع طلب المياه بنجاح إلى لوحة المدير.');
+      } finally {
+        fieldOrderLockRef.current = false;
+        setIsSavingFieldOrder(false);
+      }
     }
 
     setSelectedExistingCustomerId('');
     setNewOrderForm({
       customerName: '',
       phone: '',
-      district: 'حي الروضة',
+      district: '',
       addressDetails: '',
       tankCapacity: 2000,
       requestedLiters: 2000,
@@ -623,20 +818,32 @@ export const DriverApp: React.FC = () => {
 
   const handleSubmitModificationRequest = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeTrip || !modReason.trim()) return;
-    const res = await requestTripModification(activeTrip.id, modStops, modReason.trim());
-    if (res.success) {
-      setShowModModal(false);
-      setPlannerToast('تم إرسال طلب التعديل إلى المدير للمراجعة والاعتماد.');
-      setTimeout(() => setPlannerToast(null), 4000);
-    } else {
-      setModFeedback(res.error || 'تعذر إرسال طلب التعديل');
+    if (!activeTrip || !modReason.trim() || modLockRef.current) return;
+    modLockRef.current = true;
+    setIsSubmittingMod(true);
+    try {
+      const res = await requestTripModification(activeTrip.id, modStops, modReason.trim());
+      if (res.success) {
+        setShowModModal(false);
+        setPlannerToast('تم إرسال طلب التعديل إلى المدير للمراجعة والاعتماد.');
+        setTimeout(() => setPlannerToast(null), 4000);
+      } else {
+        setModFeedback(res.error || 'تعذر إرسال طلب التعديل');
+      }
+    } finally {
+      modLockRef.current = false;
+      setIsSubmittingMod(false);
     }
   };
 
   const handleManualSync = async () => {
-    if (!isOnline) return;
-    await syncOfflineData();
+    if (!isOnline || syncLockRef.current || isSyncing) return;
+    syncLockRef.current = true;
+    try {
+      await syncOfflineData();
+    } finally {
+      syncLockRef.current = false;
+    }
   };
 
   const totalPendingLocal =
@@ -644,41 +851,78 @@ export const DriverApp: React.FC = () => {
     offlineState.pendingDeliveries.length +
     offlineState.pendingOrders.length +
     (offlineState.pendingCustomers?.length || 0) +
+    (offlineState.pendingDistricts?.length || 0) +
     offlineState.pendingGpsPoints.length;
 
   const handleDriverAcceptTripRequest = async (trip: Trip) => {
+    if (tripRespondLockRef.current) return;
+    tripRespondLockRef.current = true;
     setRespondError(null);
     setRespondingTripId(trip.id);
-    const res = await respondToManagerTrip(trip.id, 'accepted');
-    setRespondingTripId(null);
-    if (res.success) {
-      setDecliningTripId(null);
-      setDeclineReasonInput('');
-      setSelectedTripId(trip.id);
-      setActiveTab('trip');
-      setPlannerToast(`تمت موافقتك على طلب الرحلة ${trip.tripNumber} وظهور ذلك للمدير فوراً.`);
-      setTimeout(() => setPlannerToast(null), 5000);
-    } else {
-      setRespondError(res.error || 'تعذر تسجيل الموافقة');
+    try {
+      const res = await respondToManagerTrip(trip.id, 'accepted');
+      if (res.success) {
+        setDecliningTripId(null);
+        setDeclineReasonInput('');
+        setSelectedTripId(trip.id);
+        setActiveTab('trip');
+        setPlannerToast(`تمت موافقتك على طلب الرحلة ${trip.tripNumber} وظهور ذلك للمدير فوراً.`);
+        setTimeout(() => setPlannerToast(null), 5000);
+      } else {
+        setRespondError(res.error || 'تعذر تسجيل الموافقة');
+      }
+    } finally {
+      tripRespondLockRef.current = false;
+      setRespondingTripId(null);
     }
   };
 
   const handleDriverDeclineTripRequest = async (trip: Trip) => {
+    if (tripRespondLockRef.current) return;
     setRespondError(null);
     if (!declineReasonInput.trim()) {
       setRespondError('يرجى كتابة سبب عدم الموافقة أو الاعتذار ليظهر للمدير.');
       return;
     }
+    tripRespondLockRef.current = true;
     setRespondingTripId(trip.id);
-    const res = await respondToManagerTrip(trip.id, 'declined', declineReasonInput.trim());
-    setRespondingTripId(null);
-    if (res.success) {
-      setDecliningTripId(null);
-      setDeclineReasonInput('');
-      setPlannerToast(`تم إرسال ردك بالسبب المكتوب عن الرحلة ${trip.tripNumber} إلى المدير فوراً.`);
-      setTimeout(() => setPlannerToast(null), 5000);
-    } else {
-      setRespondError(res.error || 'تعذر إرسال الرد');
+    try {
+      const res = await respondToManagerTrip(trip.id, 'declined', declineReasonInput.trim());
+      if (res.success) {
+        setDecliningTripId(null);
+        setDeclineReasonInput('');
+        setPlannerToast(`تم إرسال ردك بالسبب المكتوب عن الرحلة ${trip.tripNumber} إلى المدير فوراً.`);
+        setTimeout(() => setPlannerToast(null), 5000);
+      } else {
+        setRespondError(res.error || 'تعذر إرسال الرد');
+      }
+    } finally {
+      tripRespondLockRef.current = false;
+      setRespondingTripId(null);
+    }
+  };
+
+  const handleAcknowledgeDirective = async (directiveId: string) => {
+    if (directiveLockRef.current) return;
+    directiveLockRef.current = true;
+    setBusyDirectiveId(directiveId);
+    try {
+      await acknowledgeDirective(directiveId, directiveReplyMap[directiveId]);
+    } finally {
+      directiveLockRef.current = false;
+      setBusyDirectiveId(null);
+    }
+  };
+
+  const handleCompleteDirective = async (directiveId: string, fallbackReply: string) => {
+    if (directiveLockRef.current) return;
+    directiveLockRef.current = true;
+    setBusyDirectiveId(directiveId);
+    try {
+      await completeDirective(directiveId, directiveReplyMap[directiveId] || fallbackReply);
+    } finally {
+      directiveLockRef.current = false;
+      setBusyDirectiveId(null);
     }
   };
 
@@ -803,17 +1047,23 @@ export const DriverApp: React.FC = () => {
               <div className="flex gap-2">
                 {d.status === 'sent' && (
                   <button
-                    onClick={() => acknowledgeDirective(d.id, directiveReplyMap[d.id])}
-                    className="flex-1 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-[11px] font-bold"
+                    type="button"
+                    disabled={busyDirectiveId === d.id}
+                    onClick={() => handleAcknowledgeDirective(d.id)}
+                    className="flex-1 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 disabled:opacity-50"
                   >
-                    تم الاستلام
+                    {busyDirectiveId === d.id && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    <span>تم الاستلام</span>
                   </button>
                 )}
                 <button
-                  onClick={() => completeDirective(d.id, directiveReplyMap[d.id] || 'تم تنفيذ توجيه المدير')}
-                  className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-bold"
+                  type="button"
+                  disabled={busyDirectiveId === d.id}
+                  onClick={() => handleCompleteDirective(d.id, 'تم تنفيذ توجيه المدير')}
+                  className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 disabled:opacity-50"
                 >
-                  تم الإنجاز
+                  {busyDirectiveId === d.id && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>تم الإنجاز</span>
                 </button>
               </div>
             </div>
@@ -846,7 +1096,7 @@ export const DriverApp: React.FC = () => {
                   <div>
                     <span className="font-mono font-bold text-sky-400">{reqTrip.tripNumber}</span>
                     <span className="text-[11px] text-slate-300 mr-2">
-                      · {reqTrip.customerStops.length} وجهات · {reqTrip.initialLoadLiters.toLocaleString()} لتر
+                      · {reqTrip.customerStops.length} وجهات
                     </span>
                   </div>
                   <button
@@ -879,7 +1129,7 @@ export const DriverApp: React.FC = () => {
                       onClick={() => handleDriverAcceptTripRequest(reqTrip)}
                       className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold flex items-center justify-center gap-1.5 disabled:opacity-50"
                     >
-                      <CheckCircle className="w-4 h-4" />
+                      {isBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
                       <span>{isBusy ? 'جاري التأكيد...' : 'موافقة على الرحلة'}</span>
                     </button>
                     <button
@@ -913,9 +1163,10 @@ export const DriverApp: React.FC = () => {
                         type="button"
                         disabled={isBusy}
                         onClick={() => handleDriverDeclineTripRequest(reqTrip)}
-                        className="flex-1 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-bold text-[11px] disabled:opacity-50"
+                        className="flex-1 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-bold text-[11px] flex items-center justify-center gap-1.5 disabled:opacity-50"
                       >
-                        {isBusy ? 'جاري الإرسال...' : 'إرسال الرد والسبب للمدير'}
+                        {isBusy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                        <span>{isBusy ? 'جاري الإرسال...' : 'إرسال الرد والسبب للمدير'}</span>
                       </button>
                       <button
                         type="button"
@@ -936,31 +1187,28 @@ export const DriverApp: React.FC = () => {
         </div>
       )}
 
-      {/* Main Truck Capacity & Auto-Sync Alert Strip */}
+      {/* Tracking Status Banner Strip (No Water/Cash Controls) */}
       <div className="bg-slate-800/80 p-3 border-b border-slate-700 space-y-2">
         <div className="flex items-center justify-between text-xs">
           <div className="flex items-center gap-1.5 text-slate-300">
             <Truck className="w-4 h-4 text-sky-400" />
             <span>
-              وايت {truck.maxCapacityLiters.toLocaleString()}L ({truck.plateNumber})
+              مركبة التتبع ({truck.plateNumber})
             </span>
           </div>
-          <span className="font-mono text-emerald-400 font-bold">
-            {activeTrip ? activeTrip.remainingLiters.toLocaleString() : truck.maxCapacityLiters.toLocaleString()} لتر متبقي
+          <span
+            className={`font-bold px-2 py-0.5 rounded-full text-[10px] border ${
+              activeTrip?.status === 'in_progress'
+                ? 'bg-emerald-950 text-emerald-300 border-emerald-700'
+                : 'bg-sky-950/80 text-sky-300 border-sky-700'
+            }`}
+          >
+            {activeTrip?.status === 'in_progress'
+              ? activeTrip.id.startsWith('trip-auto-')
+                ? 'التتبع التلقائي نشط (خارج محيط المصنع)'
+                : 'التتبع التلقائي نشط (بقرار المدير)'
+              : 'مراقبة محيط المصنع نشطة'}
           </span>
-        </div>
-
-        <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
-          <div
-            className="bg-sky-500 h-2 rounded-full transition-all duration-500"
-            style={{
-              width: `${
-                activeTrip
-                  ? Math.min(100, (activeTrip.remainingLiters / truck.maxCapacityLiters) * 100)
-                  : 100
-              }%`,
-            }}
-          />
         </div>
 
         {(lastAutoSyncResult || isSyncing) && (
@@ -1016,14 +1264,14 @@ export const DriverApp: React.FC = () => {
               </div>
               <div className="text-[10px] text-slate-400 flex items-center gap-1.5">
                 <ShieldCheck className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                <span>إعداد مخططات الرحلات من صلاحيات المدير فقط — يمكنك رفع الطلبات والزبائن وتنفيذ الرحلات المعتمدة.</span>
+                <span>تطبيق تتبع ومسارات فقط — يبدأ التتبع باعتماد المدير ويقف تلقائياً عند العودة لنقطة الانطلاق أو بإيقاف المدير.</span>
               </div>
             </div>
 
             {/* VIEW ACTIVE/SELECTED TRIP */}
             {activeTrip && (
               <div className="space-y-4">
-                {/* Status Banner & Primary Workflow Actions */}
+                {/* Status Banner & Read-Only Tracking State */}
                 <div className="bg-slate-800 border border-slate-700 rounded-2xl p-3.5 space-y-3">
                   <div className="flex items-start justify-between gap-2">
                     <div>
@@ -1036,8 +1284,7 @@ export const DriverApp: React.FC = () => {
                         )}
                       </div>
                       <div className="text-[11px] text-slate-400 mt-1">
-                        {activeTrip.customerStops.length} وجهات · المطلوب {activeTrip.initialLoadLiters.toLocaleString()}L · الموزع{' '}
-                        {activeTrip.deliveredLiters.toLocaleString()}L
+                        {activeTrip.customerStops.length} وجهات في المسار · {(activeTrip.gpsPoints || []).length} نقطة GPS · {activeTrip.actualDistanceKm ?? 0} كم
                       </div>
                     </div>
 
@@ -1065,153 +1312,33 @@ export const DriverApp: React.FC = () => {
                     </div>
                   )}
 
-                  {/* Mandatory Manager Approval Gate */}
-                  {activeTrip.status === 'pending_approval' && (
-                    <div className="space-y-2">
-                      <div className="p-2.5 bg-amber-950/60 border border-amber-700/70 rounded-xl text-[11px] text-amber-200 flex items-center gap-2">
-                        <Lock className="w-4 h-4 text-amber-400 shrink-0" />
-                        <span>لا يُسمح ببدء الرحلة إلا بعد مراجعة واعتماد المدير العام الصريح.</span>
-                      </div>
-                      <button
-                        type="button"
-                        disabled
-                        className="w-full py-3 bg-slate-700 text-slate-400 font-bold rounded-xl text-xs flex items-center justify-center gap-2 cursor-not-allowed opacity-70"
-                      >
-                        <Lock className="w-4 h-4" />
-                        <span>بدء الرحلة (مقفل — بانتظار الاعتماد)</span>
-                      </button>
+                  {/* Mandatory Manager Approval Gate (Tracking controlled solely by Manager) */}
+                  {(activeTrip.status === 'pending_approval' || activeTrip.status === 'approved') && (
+                    <div className="p-2.5 bg-amber-950/60 border border-amber-700/70 rounded-xl text-[11px] text-amber-200 flex items-center gap-2">
+                      <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+                      <span>تشغيل التتبع يتم تلقائياً فور اعتماد الرحلة من المدير العام فقط، ولا يوجد زر تشغيل يدوي عند السائق.</span>
                     </div>
                   )}
 
-                  {/* Driver Acceptance / Declined Status for Manager-Proposed Trips */}
-                  {activeTrip.createdByRole === 'manager' && activeTrip.driverAcceptanceStatus === 'declined' && (
-                    <div className="p-3 bg-rose-950/75 border border-rose-600 rounded-xl text-xs text-rose-200 space-y-2">
-                      <div className="flex items-center gap-2 font-bold text-rose-300">
-                        <XCircle className="w-4 h-4 shrink-0" />
-                        <span>تم إرسال ردك للمدير: اعتذار / عدم الموافقة على طلب الرحلة</span>
-                      </div>
-                      <p className="text-[11px] bg-slate-950/70 p-2 rounded-lg border border-rose-800/70">
-                        <strong>السبب المكتوب:</strong> {activeTrip.driverResponseReason}
-                      </p>
-                      {activeTrip.status === 'approved' && (
-                        <button
-                          type="button"
-                          onClick={() => handleDriverAcceptTripRequest(activeTrip)}
-                          className="w-full py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-lg text-[11px]"
-                        >
-                          تغيير الرد والموافقة على تنفيذ الرحلة
-                        </button>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Approved -> Wait for Driver Acceptance if Manager-proposed, otherwise Start Trip */}
-                  {activeTrip.status === 'approved' && (
-                    <div className="space-y-2">
-                      {activeTrip.createdByRole === 'manager' &&
-                      activeTrip.driverAcceptanceStatus !== 'accepted' ? (
-                        activeTrip.driverAcceptanceStatus !== 'declined' && (
-                          <div className="p-3 bg-sky-950/70 border border-sky-500 rounded-xl space-y-2.5 text-xs">
-                            <div className="font-bold text-sky-300 flex items-center gap-1.5">
-                              <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-                              <span>طلب رحلة معتمد ومقترح من المدير — يرجى تأكيد الموافقة أو الرد بالسبب</span>
-                            </div>
-                            {respondError && decliningTripId === activeTrip.id && (
-                              <div className="text-[11px] text-rose-300 bg-rose-950/80 border border-rose-700 rounded-lg p-2">
-                                {respondError}
-                              </div>
-                            )}
-                            {decliningTripId === activeTrip.id ? (
-                              <div className="space-y-2 bg-slate-950/80 p-2.5 rounded-xl border border-rose-700/70">
-                                <label className="block text-[11px] font-bold text-rose-300">
-                                  اكتب سبب عدم الموافقة أو الاعتذار ليظهر للمدير فوراً:
-                                </label>
-                                <textarea
-                                  rows={2}
-                                  value={declineReasonInput}
-                                  onChange={(e) => setDeclineReasonInput(e.target.value)}
-                                  placeholder="اكتب السبب هنا..."
-                                  className="w-full p-2 bg-slate-900 border border-slate-700 rounded-lg text-white text-xs focus:border-rose-500 outline-none"
-                                />
-                                <div className="flex gap-2">
-                                  <button
-                                    type="button"
-                                    disabled={respondingTripId === activeTrip.id}
-                                    onClick={() => handleDriverDeclineTripRequest(activeTrip)}
-                                    className="flex-1 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-lg font-bold text-[11px] disabled:opacity-50"
-                                  >
-                                    {respondingTripId === activeTrip.id ? 'جاري الإرسال...' : 'إرسال الرد والسبب للمدير'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setDecliningTripId(null);
-                                      setRespondError(null);
-                                    }}
-                                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg font-bold text-[11px]"
-                                  >
-                                    إلغاء
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="flex gap-2">
-                                <button
-                                  type="button"
-                                  disabled={respondingTripId === activeTrip.id}
-                                  onClick={() => handleDriverAcceptTripRequest(activeTrip)}
-                                  className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl flex items-center justify-center gap-1.5"
-                                >
-                                  <CheckCircle className="w-4 h-4" />
-                                  <span>موافقة على الرحلة</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setDecliningTripId(activeTrip.id);
-                                    setDeclineReasonInput('');
-                                    setRespondError(null);
-                                  }}
-                                  className="flex-1 py-2.5 bg-rose-950 hover:bg-rose-900 border border-rose-600 text-rose-200 font-bold rounded-xl flex items-center justify-center gap-1.5"
-                                >
-                                  <MessageSquare className="w-4 h-4" />
-                                  <span>رد بكتابة السبب</span>
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        )
-                      ) : (
-                        <>
-                          <div className="p-2 bg-emerald-950/60 border border-emerald-700/70 rounded-xl text-[11px] text-emerald-300 flex items-center gap-2">
-                            <ShieldCheck className="w-4 h-4 shrink-0" />
-                            <span>
-                              تم اعتماد الرحلة من {activeTrip.approvedBy || 'المدير العام'}
-                              {activeTrip.createdByRole === 'manager' ? ' ووافق السائق' : ''} — اضغط للانطلاق.
-                            </span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={handleStartTrip}
-                            className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2 shadow-lg"
-                          >
-                            <Play className="w-5 h-5 fill-white" />
-                            <span>بدء الرحلة وتشغيل التتبع التلقائي</span>
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  )}
-
-                  {/* In Progress -> Plant Geofence Return Alert & Manual Return Button */}
+                  {/* In Progress -> Automatic Manager-Controlled Tracking & Automatic Return-to-Origin Stop */}
                   {activeTrip.status === 'in_progress' && (
                     <div className="space-y-2.5">
-                      <div className="bg-emerald-950/70 border border-emerald-600 rounded-xl p-2.5 flex items-center justify-between text-[11px]">
-                        <div className="flex items-center gap-2 text-emerald-300 font-bold">
-                          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
-                          <span>تتبع GPS التلقائي يعمل ({(activeTrip.gpsPoints || []).length} نقطة)</span>
+                      <div className="bg-emerald-950/70 border border-emerald-600 rounded-xl p-3 space-y-1.5 text-[11px]">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 text-emerald-300 font-bold">
+                            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                            <span>تتبع GPS التلقائي نشط بإشراف المدير ({(activeTrip.gpsPoints || []).length} نقطة)</span>
+                          </div>
+                          <span className="font-mono text-sky-300">{activeTrip.actualDistanceKm ?? 0} كم</span>
                         </div>
-                        <span className="font-mono text-sky-300">{activeTrip.actualDistanceKm ?? 0} كم</span>
+                        <p className="text-slate-300 leading-relaxed text-[10px]">
+                          يستمر التتبع حتى الابتعاد الفعلي ({completionReadiness?.departureThresholdMeters || 450}م+ / 0.8كم+ أو زيارة عميل) ثم العودة المؤكدة لنقطة الانطلاق (البعد الحالي: {plantGeofenceCheck.distanceMeters} م) أو بإيقاف المدير.
+                        </p>
+                        {completionReadiness && (
+                          <div className="text-[10px] text-emerald-200/90 bg-emerald-900/40 border border-emerald-700/50 rounded-lg px-2 py-1">
+                            {completionReadiness.reason}
+                          </div>
+                        )}
                       </div>
 
                       {gpsError && (
@@ -1219,32 +1346,6 @@ export const DriverApp: React.FC = () => {
                           <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
                           <span>{gpsError}</span>
                         </div>
-                      )}
-
-                      {plantGeofenceCheck.inside ? (
-                        <div className="bg-teal-950 border-2 border-emerald-400 rounded-xl p-3 space-y-2 shadow-lg">
-                          <div className="text-xs font-bold text-emerald-300 flex items-center gap-2">
-                            <CheckCircle className="w-4 h-4 shrink-0" />
-                            <span>تم رصد وصولك إلى نطاق المصنع ({plantGeofenceCheck.distanceMeters} متر)!</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleConfirmReturnToPlant(true)}
-                            className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2"
-                          >
-                            <Square className="w-4 h-4 fill-white" />
-                            <span>إنهاء الرحلة وتأكيد العودة للمصنع</span>
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => handleConfirmReturnToPlant(false)}
-                          className="w-full py-2.5 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2"
-                        >
-                          <MapPin className="w-4 h-4" />
-                          <span>تأكيد العودة إلى المصنع وإنهاء التتبع (البعد: {plantGeofenceCheck.distanceMeters}م)</span>
-                        </button>
                       )}
                     </div>
                   )}
@@ -1276,11 +1377,11 @@ export const DriverApp: React.FC = () => {
                   )}
                 </div>
 
-                {/* Stops Queue Strip */}
+                {/* Stops Queue Strip (Route Destinations Only) */}
                 {activeTrip.customerStops.length > 0 && (
                   <div className="space-y-2">
                     <div className="text-xs text-slate-400 font-semibold flex justify-between">
-                      <span>الوجهات المعتمدة في المخطط:</span>
+                      <span>الوجهات في مسار الرحلة:</span>
                       <span className="font-mono">
                         {selectedStopIndex + 1} من {activeTrip.customerStops.length}
                       </span>
@@ -1288,7 +1389,6 @@ export const DriverApp: React.FC = () => {
                     <div className="flex gap-2 overflow-x-auto pb-1">
                       {activeTrip.customerStops.map((stop, idx) => {
                         const isSelected = selectedStopIndex === idx;
-                        const isDone = stop.status === 'delivered';
                         return (
                           <button
                             key={stop.orderId}
@@ -1296,14 +1396,12 @@ export const DriverApp: React.FC = () => {
                             className={`p-2.5 rounded-xl text-right min-w-[140px] shrink-0 border transition-all ${
                               isSelected
                                 ? 'bg-sky-600 border-sky-400 text-white shadow-lg'
-                                : isDone
-                                ? 'bg-emerald-950/60 border-emerald-800 text-emerald-200'
                                 : 'bg-slate-800 border-slate-700 text-slate-300'
                             }`}
                           >
                             <div className="flex items-center justify-between text-xs mb-1">
-                              <span className="font-bold text-[10px]">#{stop.stopSequence}</span>
-                              <span className="text-[10px] font-mono">{stop.requestedLiters}L</span>
+                              <span className="font-bold text-[10px]">وجهة #{stop.stopSequence}</span>
+                              <MapPin className="w-3 h-3 opacity-80" />
                             </div>
                             <div className="font-bold text-xs truncate">{stop.customerName}</div>
                             <div className="text-[10px] opacity-80 truncate">{stop.district}</div>
@@ -1314,102 +1412,28 @@ export const DriverApp: React.FC = () => {
                   </div>
                 )}
 
-                {/* Active Stop Card */}
+                {/* Active Stop Card (Tracking & Navigation Info Only — No Water or Cash Options) */}
                 {currentStop && (
-                  <div className="bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-4">
-                    <div className="flex items-start justify-between pb-3 border-b border-slate-700">
+                  <div className="bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-3">
+                    <div className="flex items-start justify-between">
                       <div>
                         <span className="text-xs text-sky-400 font-bold block mb-0.5">
-                          المحطة #{currentStop.stopSequence} · {currentStop.district}
+                          الوجهة #{currentStop.stopSequence} · {currentStop.district}
                         </span>
                         <h3 className="font-bold text-base text-white">{currentStop.customerName}</h3>
-                        <p className="text-xs text-slate-400 mt-0.5">{currentStop.addressDetails}</p>
+                        <p className="text-xs text-slate-400 mt-0.5">{currentStop.addressDetails || 'لا توجد تفاصيل عنوان إضافية'}</p>
                         <div className="text-[10px] font-mono text-slate-500 mt-1">
                           GPS: {currentStop.lat.toFixed(5)}, {currentStop.lng.toFixed(5)}
                         </div>
                       </div>
                       <a
                         href={`tel:${currentStop.phone}`}
-                        className="w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center hover:bg-emerald-500 shadow-lg"
+                        className="w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center hover:bg-emerald-500 shadow-lg shrink-0"
+                        title="اتصال بالزبون"
                       >
                         <Phone className="w-5 h-5" />
                       </a>
                     </div>
-
-                    <div className="grid grid-cols-2 gap-2 text-xs bg-slate-900/60 p-3 rounded-xl border border-slate-700/60 font-mono">
-                      <div>
-                        <span className="text-slate-400 block text-[10px]">الكمية المطلوبة:</span>
-                        <span className="text-sky-400 font-bold text-sm">
-                          {currentStop.requestedLiters.toLocaleString()} لتر
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 block text-[10px]">حالة التسليم:</span>
-                        <span className={`font-bold text-sm ${currentStop.status === 'delivered' ? 'text-emerald-400' : 'text-amber-300'}`}>
-                          {currentStop.status === 'delivered' ? 'تم التسليم ✓' : 'قيد الانتظار'}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Delivery Logging Allowed Only When In Progress */}
-                    {activeTrip.status === 'in_progress' && currentStop.status !== 'delivered' && (
-                      <div className="space-y-2.5">
-                        {!unloadingActive ? (
-                          <button
-                            onClick={() => {
-                              setDeliveredInput(currentStop.requestedLiters);
-                              setPaidInput(currentStop.totalAmount);
-                              setUnloadingActive(true);
-                            }}
-                            className="w-full py-3.5 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-xl text-sm flex items-center justify-center gap-2 shadow-lg"
-                          >
-                            <Droplet className="w-5 h-5 fill-white" />
-                            <span>بدء تفريغ المياه وتسجيل التسليم</span>
-                          </button>
-                        ) : (
-                          <div className="bg-slate-900 p-4 rounded-xl border border-sky-500 space-y-3">
-                            <div className="text-xs font-bold text-sky-400 flex items-center gap-1.5">
-                              <Droplet className="w-4 h-4 fill-sky-400" />
-                              <span>توثيق الكمية المسلمة والمبلغ المحصل</span>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-2">
-                              <div>
-                                <label className="block text-[11px] text-slate-400 mb-1">الكمية المسلمة (لتر) *</label>
-                                <input
-                                  type="number"
-                                  value={deliveredInput}
-                                  onChange={(e) => {
-                                    const val = Number(e.target.value);
-                                    setDeliveredInput(val);
-                                    setPaidInput(val * currentStop.pricePerLiter);
-                                  }}
-                                  className="w-full p-2.5 bg-slate-800 border border-slate-600 rounded-lg text-sm font-mono font-bold text-white text-center"
-                                />
-                              </div>
-                              <div>
-                                <label className="block text-[11px] text-slate-400 mb-1">المبلغ المستلم (ر.ي) *</label>
-                                <input
-                                  type="number"
-                                  value={paidInput}
-                                  onChange={(e) => setPaidInput(Number(e.target.value))}
-                                  className="w-full p-2.5 bg-slate-800 border border-slate-600 rounded-lg text-sm font-mono font-bold text-emerald-400 text-center"
-                                />
-                              </div>
-                            </div>
-
-                            <button
-                              onClick={handleConfirmDelivery}
-                              disabled={isSubmitting}
-                              className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg disabled:opacity-50"
-                            >
-                              <CheckCircle className="w-4 h-4" />
-                              <span>{isSubmitting ? 'جاري الحفظ...' : 'تأكيد التسليم وإصدار الفاتورة'}</span>
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )}
                   </div>
                 )}
               </div>
@@ -1432,6 +1456,17 @@ export const DriverApp: React.FC = () => {
                 </button>
               </div>
             )}
+
+            <DriverWeeklyFuelReport
+              trips={trips}
+              settings={settings}
+              driverId={driverSession?.id || truck.driverId}
+              driverName={driverSession?.name || truck.driverName}
+              onSelectTrip={(tripId) => {
+                setSelectedTripId(tripId);
+                setSelectedStopIndex(0);
+              }}
+            />
           </div>
         )}
 
@@ -1559,23 +1594,14 @@ export const DriverApp: React.FC = () => {
                       className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono"
                     />
                   </div>
-                  <div>
-                    <label className="block text-slate-300 font-semibold mb-1">الحي بمأرب</label>
-                    <select
-                      value={newOrderForm.district}
-                      onChange={(e) => setNewOrderForm({ ...newOrderForm, district: e.target.value })}
-                      className="w-full p-2.5 bg-slate-900 border border-slate-700 rounded-lg text-white"
-                    >
-                      <option value="حي الروضة">حي الروضة</option>
-                      <option value="حي الشركة">حي الشركة</option>
-                      <option value="المجمع الحكومي">المجمع الحكومي</option>
-                      <option value="حي السلام">حي السلام</option>
-                      <option value="حي المطار">حي المطار</option>
-                      <option value="حي الفاو">حي الفاو</option>
-                      <option value="الخسيف">الخسيف</option>
-                      <option value="حصون آل جلال">حصون آل جلال</option>
-                    </select>
-                  </div>
+                  <DistrictSelectField
+                    value={newOrderForm.district}
+                    onChange={(val) => setNewOrderForm({ ...newOrderForm, district: val })}
+                    districts={allDistricts}
+                    label="المنطقة / الحي (مديرية الوادي - مأرب)"
+                    theme="dark"
+                    disabled={isSavingFieldOrder}
+                  />
                   <div className={submissionMode === 'order_new' ? 'grid grid-cols-2 gap-2' : ''}>
                     <div>
                       <label className="block text-slate-300 font-semibold mb-1">سعة الخزان</label>
@@ -1666,13 +1692,22 @@ export const DriverApp: React.FC = () => {
 
               <button
                 type="submit"
-                className="w-full py-3 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow"
+                disabled={isSavingFieldOrder}
+                className="w-full py-3 bg-sky-600 hover:bg-sky-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow transition-opacity"
               >
-                <CheckCircle className="w-4 h-4" />
+                {isSavingFieldOrder ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <CheckCircle className="w-4 h-4" />
+                )}
                 <span>
-                  {submissionMode === 'customer_only'
-                    ? 'رفع بيانات الزبون للمدير'
-                    : 'رفع طلب المياه للمدير'}
+                  {isSavingFieldOrder
+                    ? submissionMode === 'customer_only'
+                      ? 'جاري حفظ الزبون...'
+                      : 'جاري إرسال الطلب...'
+                    : submissionMode === 'customer_only'
+                      ? 'رفع بيانات الزبون للمدير'
+                      : 'رفع طلب المياه للمدير'}
                 </span>
               </button>
             </form>
@@ -1688,8 +1723,12 @@ export const DriverApp: React.FC = () => {
                   <Navigation className="w-4 h-4" />
                   <span>التتبع الجغرافي التلقائي GPS</span>
                 </h3>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTrip?.status === 'in_progress' ? 'bg-emerald-950 text-emerald-300 border border-emerald-700' : 'bg-slate-900 text-slate-400'}`}>
-                  {activeTrip?.status === 'in_progress' ? 'نشط الآن' : 'متوقف'}
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${activeTrip?.status === 'in_progress' ? 'bg-emerald-950 text-emerald-300 border border-emerald-700' : 'bg-sky-950 text-sky-300 border border-sky-700'}`}>
+                  {activeTrip?.status === 'in_progress'
+                    ? activeTrip.id.startsWith('trip-auto-')
+                      ? 'نشط تلقائياً (خارج المصنع)'
+                      : 'نشط الآن'
+                    : 'مراقبة محيط المصنع نشطة'}
                 </span>
               </div>
 
@@ -1835,13 +1874,15 @@ export const DriverApp: React.FC = () => {
                   <span className="font-mono font-bold text-sky-400">{offlineState.pendingGpsPoints.length}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-400">عمليات التسليم:</span>
-                  <span className="font-mono font-bold text-emerald-400">{offlineState.pendingDeliveries.length}</span>
+                  <span className="text-slate-400">نقاط التوقف المرصودة:</span>
+                  <span className="font-mono font-bold text-emerald-400">{activeTrip?.detectedStops?.length || 0}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-400">طلبات / زبائن معلقة:</span>
+                  <span className="text-slate-400">طلبات / زبائن / مناطق:</span>
                   <span className="font-mono font-bold text-amber-400">
-                    {offlineState.pendingOrders.length + (offlineState.pendingCustomers?.length || 0)}
+                    {offlineState.pendingOrders.length +
+                      (offlineState.pendingCustomers?.length || 0) +
+                      (offlineState.pendingDistricts?.length || 0)}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -1949,7 +1990,7 @@ export const DriverApp: React.FC = () => {
               <div className="space-y-2 max-h-40 overflow-y-auto">
                 {modStops.map((st, idx) => (
                   <div key={st.orderId} className="flex items-center justify-between bg-slate-900 p-2 rounded-lg border border-slate-700">
-                    <span>#{idx + 1} {st.customerName} ({st.requestedLiters}L)</span>
+                    <span>#{idx + 1} {st.customerName} ({st.district})</span>
                     <button
                       type="button"
                       onClick={() => setModStops((prev) => prev.filter((_, i) => i !== idx))}
@@ -1975,16 +2016,19 @@ export const DriverApp: React.FC = () => {
               <div className="flex gap-2">
                 <button
                   type="button"
+                  disabled={isSubmittingMod}
                   onClick={() => setShowModModal(false)}
-                  className="flex-1 py-2 bg-slate-700 rounded-xl font-bold"
+                  className="flex-1 py-2 bg-slate-700 rounded-xl font-bold disabled:opacity-50"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-bold"
+                  disabled={isSubmittingMod}
+                  className="flex-1 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-60 text-white rounded-xl font-bold flex items-center justify-center gap-1.5"
                 >
-                  إرسال الطلب للمدير
+                  {isSubmittingMod && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>{isSubmittingMod ? 'جاري الإرسال...' : 'إرسال الطلب للمدير'}</span>
                 </button>
               </div>
             </form>
@@ -2062,17 +2106,23 @@ export const DriverApp: React.FC = () => {
                           <div className="flex gap-2">
                             {d.status === 'sent' && (
                               <button
-                                onClick={() => acknowledgeDirective(d.id, directiveReplyMap[d.id])}
-                                className="flex-1 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold"
+                                type="button"
+                                disabled={busyDirectiveId === d.id}
+                                onClick={() => handleAcknowledgeDirective(d.id)}
+                                className="flex-1 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold flex items-center justify-center gap-1 disabled:opacity-50"
                               >
-                                تم الاستلام
+                                {busyDirectiveId === d.id && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                                <span>تم الاستلام</span>
                               </button>
                             )}
                             <button
-                              onClick={() => completeDirective(d.id, directiveReplyMap[d.id] || 'تم التنفيذ بنجاح')}
-                              className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold"
+                              type="button"
+                              disabled={busyDirectiveId === d.id}
+                              onClick={() => handleCompleteDirective(d.id, 'تم التنفيذ بنجاح')}
+                              className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold flex items-center justify-center gap-1 disabled:opacity-50"
                             >
-                              تأكيد الإنجاز
+                              {busyDirectiveId === d.id && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                              <span>تأكيد الإنجاز</span>
                             </button>
                           </div>
                         </div>
@@ -2165,14 +2215,14 @@ export const DriverApp: React.FC = () => {
         customerName={newOrderForm.customerName || 'العميل الجديد'}
         initialLat={newOrderForm.lat}
         initialLng={newOrderForm.lng}
+        initialDistrict={newOrderForm.district}
         existingCustomers={customers}
         settings={settings}
-        onSelectLocation={({ lat, lng, district }) => {
+        onSelectLocation={({ lat, lng }) => {
           setNewOrderForm((prev) => ({
             ...prev,
             lat,
             lng,
-            district: district || prev.district,
           }));
           setHasPickedFromMap(true);
         }}

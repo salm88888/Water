@@ -5,7 +5,7 @@
  * Root Application Component with Startup Dual-Role Portal & Passcode Security
  */
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { MapPin } from 'lucide-react';
 import { AppProvider, useApp } from './context/AppContext';
 import { RoleSelectionPortal } from './components/auth/RoleSelectionPortal';
@@ -158,15 +158,15 @@ function MainAppContent() {
         customerName={settings.plantLocation.name}
         initialLat={settings.plantLocation.lat}
         initialLng={settings.plantLocation.lng}
+        initialDistrict={settings.plantLocation.city}
         existingCustomers={customers}
         settings={settings}
-        onSelectLocation={async ({ lat, lng, district }) => {
+        onSelectLocation={async ({ lat, lng }) => {
           await updateSettings({
             plantLocation: {
               ...settings.plantLocation,
               lat,
               lng,
-              city: district ? `مأرب - ${district}` : settings.plantLocation.city,
             },
           });
         }}
@@ -176,9 +176,45 @@ function MainAppContent() {
 }
 
 export default function App() {
+  const [mapsQuotaError, setMapsQuotaError] = useState(false);
+
+  useEffect(() => {
+    const onQuotaExceeded = () => setMapsQuotaError(true);
+    window.addEventListener('gmp-quota-exceeded', onQuotaExceeded);
+    return () => window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded);
+  }, []);
+
   return (
     <AppProvider>
+      {mapsQuotaError && (
+        <div
+          dir="ltr"
+          className="bg-amber-50 border-b border-amber-300 px-4 py-2 text-xs text-amber-900 flex items-center justify-between gap-2 sticky top-0 z-50"
+        >
+          <span>
+            <strong>Google Maps quota limit reached.</strong>{' '}
+            Maps features may be temporarily unavailable under your current API key quota.{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-medium hover:text-amber-700"
+            >
+              Learn how to upgrade your quota &rarr;
+            </a>
+          </span>
+          <button
+            type="button"
+            onClick={() => setMapsQuotaError(false)}
+            className="text-amber-700 hover:text-amber-900 font-bold px-2 cursor-pointer"
+            aria-label="Dismiss"
+          >
+            &times;
+          </button>
+        </div>
+      )}
       <MainAppContent />
     </AppProvider>
   );
 }
+
